@@ -16,6 +16,7 @@ import com.noamv.localllm.model.ModelBackend
 import com.noamv.localllm.model.ModelBuild
 import com.noamv.localllm.model.ModelCatalog
 import com.noamv.localllm.model.ModelStore
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -73,17 +74,26 @@ class LiteRtEngine(
             val candidates = ModelCatalog.fallbacksFor(preferredBuild)
             val failures = mutableListOf<String>()
 
-            for ((index, build) in candidates.withIndex()) {
+            for (build in candidates) {
                 try {
                     startWith(build, onProgress)
                     return
+                } catch (cancelled: CancellationException) {
+                    // An interrupted attempt says nothing about the build. Leaving the
+                    // screen cancels this coroutine, and treating that as a failure used
+                    // to delete the model and its partial file, so a download that was
+                    // 90% done restarted from zero on the next attempt. Rethrow instead:
+                    // ModelStore keeps the .part file, and the next call resumes it.
+                    closeQuietly()
+                    throw cancelled
                 } catch (error: Throwable) {
                     Log.w(TAG, "Could not start ${build.id}", error)
                     failures += "${build.displayName}: ${error.message.orEmpty().lines().first()}"
                     closeQuietly()
-                    // A build that cannot run on this device is dead weight; the file is
-                    // gigabytes and keeping it invites a retry that will fail identically.
-                    if (index < candidates.lastIndex) store.delete(build)
+                    // The file is deliberately kept. A start failure can be transient — a
+                    // busy GPU, a low-memory moment — and discarding a verified model to
+                    // find that out costs the user a multi-gigabyte download. Once some
+                    // build does start, pruneExcept reclaims the ones that did not.
                 }
             }
 
@@ -91,6 +101,10 @@ class LiteRtEngine(
                 state = EngineState.UNSUPPORTED,
                 modelId = preferredBuild.id,
                 detail = "No model could be started. ${failures.joinToString("; ")}",
+                // Report the file as present if it is. Defaulting this to false told every
+                // client the model was missing for the rest of the process lifetime, which
+                // silently hid their insight cards long after the cause had cleared.
+                modelDownloaded = store.isInstalled(preferredBuild),
             )
             error("No usable model backend on this device. ${failures.joinToString("; ")}")
         }

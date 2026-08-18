@@ -2,6 +2,48 @@
 
 Durable choices and the evidence behind them. Newest first.
 
+## 2026-08-18 — An interrupted preparation never discards the model
+
+**Decision.** `LiteRtEngine.prepare()` rethrows `CancellationException` instead of treating
+it as a failed build, and no longer deletes a model file when a build fails to start. The
+download runs on an application scope (`LocalLlmApplication.prepareModel`) rather than in
+`ManagerViewModel`'s `viewModelScope`.
+
+**Why.** The loop over candidate builds caught `Throwable`, and `CancellationException` is a
+`Throwable`. The download ran in a ViewModel scope tied to `MainActivity`, so leaving the
+app cancelled it, the catch fired, and `ModelStore.delete` removed the model *and* its
+`.part` file. The next attempt started again from zero. `ModelStore` supports resume — it
+writes a `.part` and sends a `Range` header — and the catch-all defeated it entirely.
+
+Observed on a Galaxy Z Fold 7: LocalLLM held 2.08 GB (the 68.62 MB APK plus the
+2,008,432,640-byte GPU model), and after the Insights path ran it held 70.14 MB. Neither
+the model nor a `.part` remained. A killed process leaves the `.part` behind, so only the
+explicit delete explains both files being gone.
+
+The same failure hid the insight cards in Poop Schedule and Cannsheet. Both gate on
+`EngineStatus.modelDownloaded`, so a deleted model makes the card render nothing — silently
+and by design. The `UNSUPPORTED` status also let `modelDownloaded` fall back to its `false`
+default, which kept reporting "no model" for the rest of the process lifetime even when the
+file was intact; it now reports the truth.
+
+**Consequences.**
+
+- A build that cannot start keeps its file. The eager delete existed so a doomed retry
+  would not repeat, but a start failure can be transient — a busy GPU, a low-memory
+  moment — and paying a multi-gigabyte download to discover that is the worse trade.
+  `pruneExcept` still reclaims superseded files once some build has actually started.
+- Worst case two candidate models coexist (~4.6 GB) until one starts. `hasRoomFor` already
+  requires the full size plus 250 MB free, so this cannot fill the volume.
+- Closing the manager screen no longer stops a download. The work is owned by the process,
+  not the Activity.
+- `ModelStore`'s primary constructor now takes the models directory, with a `Context`
+  overload for the real path, so `ModelStoreTest` can exercise resume against a temporary
+  folder and an in-memory OkHttp interceptor.
+
+**The general lesson.** `catch (Throwable)` around cancellable work is a data-loss bug, not
+a robustness measure. Cancellation is a normal control-flow signal and says nothing about
+whether the thing being cancelled was healthy.
+
 ## 2026-08-18 — The inference service is not a foreground service
 
 **Decision.** `InferenceService` no longer calls `startForeground` while serving a bound
@@ -160,9 +202,10 @@ redistribution licence question, to accelerate a feature that writes eighty word
   libraries. The SoC is necessary but not sufficient.
 - `ModelCatalog.fallbacksFor` gives an ordered chain, NPU → GPU → CPU, and `prepare()`
   walks it, so a backend that cannot start degrades instead of failing the feature.
-- A build that fails to start has its model file deleted, and `ModelStore.pruneExcept`
-  removes superseded files after a successful start. These files are 2-3 GB; an orphan is
-  a real amount of the owner's storage.
+- A build that fails to start keeps its model file; `ModelStore.pruneExcept` removes
+  superseded files once some build has actually started. These files are 2-3 GB, so an
+  orphan is a real amount of the owner's storage — but discarding one eagerly turned out
+  to cost far more than it saved. See the entry below.
 - If NPU is ever wanted, the work is: obtain QAIRT, build
   `@litert//litert/vendors/qualcomm/dispatch:dispatch_api_so`, bundle the result in
   `jniLibs`, and the existing detection will select the NPU build on its own.

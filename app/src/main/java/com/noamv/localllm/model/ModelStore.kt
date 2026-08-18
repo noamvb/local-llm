@@ -23,11 +23,15 @@ data class DownloadProgress(val bytesRead: Long, val totalBytes: Long, val perce
  * Settings, which for a 2 GB model is worth being explicit about in the UI.
  */
 class ModelStore(
-    private val context: Context,
+    private val root: File,
     private val client: OkHttpClient = OkHttpClient(),
 ) {
+    /** The real construction path; [root] exists so tests can supply a temporary folder. */
+    constructor(context: Context, client: OkHttpClient = OkHttpClient()) :
+        this(File(context.filesDir, "models"), client)
+
     private val modelsDir: File
-        get() = File(context.filesDir, "models").apply { mkdirs() }
+        get() = root.apply { mkdirs() }
 
     fun fileFor(build: ModelBuild): File = File(modelsDir, build.fileName)
 
