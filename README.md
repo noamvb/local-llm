@@ -48,8 +48,11 @@ portable GPU build otherwise.
 
 ## Releases
 
-Signed APKs are published to the public `noamvb/local-llm-releases` repository for
-installation through Obtainium. Source stays in the private `noamvb/local-llm`.
+Signed APKs are published as releases on this repository for installation through
+Obtainium. Publishing in-repo means the built-in `GITHUB_TOKEN` is sufficient and no
+personal access token is involved; the repository is public so Obtainium can read them.
+This differs from Poop Schedule and Cannsheet, which keep private source and publish to a
+separate public releases repository.
 
 Publication is triggered only by pushing a `v*` tag, and `release-apk.yml` refuses to
 publish unless the exact tagged commit already has a completed, successful **push-to-main**

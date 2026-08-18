@@ -5,11 +5,14 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: read
+  contents: write
   actions: read
 
 env:
-  RELEASES_REPO: noamvb/local-llm-releases
+  # Releases are published into this same repository, so the built-in GITHUB_TOKEN is
+  # sufficient and no personal access token is needed. Obtainium can read them because
+  # the repository is public.
+  RELEASES_REPO: ${{ github.repository }}
 
 jobs:
   confirm-main-validation:
@@ -102,7 +105,7 @@ jobs:
 
       - name: Verify versionCode is greater than the published release
         env:
-          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -178,7 +181,7 @@ jobs:
 
       - name: Publish to the releases repository
         env:
-          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -195,7 +198,7 @@ jobs:
 
       - name: Re-download and independently verify the published assets
         env:
-          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
