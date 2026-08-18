@@ -46,6 +46,21 @@ under `files/models`, is excluded from backup, and is removed when the app is un
 The app picks the NPU build automatically when it detects a matching chipset, and the
 portable GPU build otherwise.
 
+## Releases
+
+Signed APKs are published to the public `noamvb/local-llm-releases` repository for
+installation through Obtainium. Source stays in the private `noamvb/local-llm`.
+
+Publication is triggered only by pushing a `v*` tag, and `release-apk.yml` refuses to
+publish unless the exact tagged commit already has a completed, successful **push-to-main**
+run of "LocalLLM PR checks" with both jobs green. A green pull-request run does not
+qualify. The tag must also be the current tip of `main`, `versionName` must equal the tag
+with `v` stripped, and `versionCode` must exceed the published release's.
+
+The signing keystore lives only in the `RELEASE_KEYSTORE_BASE64` repository secret and on
+the owner's machine. It is never committed. Losing it means LocalLLM can never be updated
+in place again.
+
 ## Build
 
 Requires JDK 17 and Android SDK Platform 36.1.

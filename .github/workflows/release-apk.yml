@@ -1,0 +1,209 @@
+name: Publish signed LocalLLM APK
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  RELEASES_REPO: noamvb/local-llm-releases
+
+jobs:
+  confirm-main-validation:
+    name: Confirm tested main commit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify exact-SHA main push validation run and job status
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Looking for a push validation run on main for commit $GITHUB_SHA..."
+
+          RUNS_JSON=$(gh api --method GET \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/android-pr-checks.yml/runs?event=push&branch=main&per_page=100")
+          RUN_ID=$(printf '%s' "$RUNS_JSON" | jq -r --arg sha "$GITHUB_SHA" \
+            '.workflow_runs[] | select(.head_sha == $sha and .event == "push" and .head_branch == "main") | .id' | head -n 1)
+
+          if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
+            echo "Error: no push-to-main validation run exists for $GITHUB_SHA."
+            echo "A green pull-request run does not qualify; the tag must point at a validated main commit."
+            exit 1
+          fi
+          echo "Found validation run $RUN_ID"
+
+          RUN_STATUS=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" --jq '.status')
+          if [ "$RUN_STATUS" != "completed" ]; then
+            gh run watch "$RUN_ID" --repo "$GITHUB_REPOSITORY" --exit-status
+          fi
+
+          CONCLUSION=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" --jq '.conclusion')
+          if [ "$CONCLUSION" != "success" ]; then
+            echo "Error: validation run $RUN_ID concluded '$CONCLUSION'. A cancelled run is not a success."
+            exit 1
+          fi
+
+          JOBS_JSON=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?per_page=100")
+          REQUIRED_JOB_NAMES=(
+            "Repository safety scan"
+            "Unit tests, lint and debug build"
+          )
+          for JOB_NAME in "${REQUIRED_JOB_NAMES[@]}"; do
+            MATCHES=$(printf '%s' "$JOBS_JSON" | jq -c --arg n "$JOB_NAME" '[.jobs[] | select(.name == $n)]')
+            COUNT=$(printf '%s' "$MATCHES" | jq 'length')
+            if [ "$COUNT" -ne 1 ]; then
+              echo "Error: expected exactly 1 job named '$JOB_NAME', found $COUNT."
+              exit 1
+            fi
+            STATUS=$(printf '%s' "$MATCHES" | jq -r '.[0].status')
+            CONC=$(printf '%s' "$MATCHES" | jq -r '.[0].conclusion')
+            if [ "$STATUS" != "completed" ] || [ "$CONC" != "success" ]; then
+              echo "Error: job '$JOB_NAME' is $STATUS/$CONC, expected completed/success."
+              exit 1
+            fi
+            echo "OK: $JOB_NAME"
+          done
+
+  verify-and-publish:
+    name: Build, sign and publish
+    needs: confirm-main-validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify the tag matches versionName and is the tip of main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          EXPECTED="${TAG#v}"
+          ACTUAL=$(grep -oE 'versionName = "[^"]+"' app/build.gradle.kts | head -1 | cut -d'"' -f2)
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "Error: tag $TAG implies versionName $EXPECTED but build.gradle.kts says $ACTUAL."
+            exit 1
+          fi
+          MAIN_SHA=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          if [ "$MAIN_SHA" != "$GITHUB_SHA" ]; then
+            echo "Error: the tagged commit is not the current tip of main."
+            echo "  tagged: $GITHUB_SHA"
+            echo "  main:   $MAIN_SHA"
+            echo "Anything pushed to main after tagging invalidates the tag."
+            exit 1
+          fi
+          echo "Tag $TAG matches versionName $ACTUAL and is the tip of main."
+
+      - name: Verify versionCode is greater than the published release
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          NEW_CODE=$(grep -oE 'versionCode = [0-9]+' app/build.gradle.kts | head -1 | grep -oE '[0-9]+')
+          echo "This build: versionCode $NEW_CODE"
+          if ! gh release view --repo "$RELEASES_REPO" >/dev/null 2>&1; then
+            echo "No previous release; nothing to compare against."
+            exit 0
+          fi
+          mkdir -p /tmp/prev
+          gh release download --repo "$RELEASES_REPO" --dir /tmp/prev --pattern "*.apk" --clobber
+          PREV_APK=$(ls /tmp/prev/*.apk | head -1)
+          AAPT=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | head -1)
+          PREV_CODE=$("$AAPT" dump badging "$PREV_APK" | grep -oE "versionCode='[0-9]+'" | grep -oE '[0-9]+')
+          echo "Published: versionCode $PREV_CODE"
+          if [ "$NEW_CODE" -le "$PREV_CODE" ]; then
+            echo "Error: versionCode $NEW_CODE must be strictly greater than the published $PREV_CODE."
+            exit 1
+          fi
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Unit tests and lint
+        run: ./gradlew --no-daemon --no-configuration-cache testDebugUnitTest lintDebug
+
+      - name: Decode the signing keystore
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$RELEASE_KEYSTORE_BASE64"
+          printf '%s' "$RELEASE_KEYSTORE_BASE64" | base64 --decode > "${RUNNER_TEMP}/local-llm-release.jks"
+
+      - name: Build the signed release APK
+        env:
+          KEYSTORE_PATH: ${{ runner.temp }}/local-llm-release.jks
+          STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$STORE_PASSWORD" && test -n "$KEY_ALIAS" && test -n "$KEY_PASSWORD"
+          # No configuration cache, so signing material is never persisted to disk.
+          ./gradlew --no-daemon --no-configuration-cache assembleRelease
+
+      - name: Verify the signature and prepare assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
+          BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$BUILD_TOOLS/apksigner" verify --print-certs "$APK"
+          "$BUILD_TOOLS/aapt2" dump badging "$APK" | head -3
+          # A debug certificate here would mean the keystore secret is wrong.
+          if "$BUILD_TOOLS/apksigner" verify --print-certs "$APK" | grep -q "CN=Android Debug"; then
+            echo "Error: the release APK is signed with a debug certificate."
+            exit 1
+          fi
+          mkdir -p dist
+          cp "$APK" "dist/LocalLLM-${VERSION}.apk"
+          cd dist && shasum -a 256 "LocalLLM-${VERSION}.apk" > "LocalLLM-${VERSION}.apk.sha256"
+          cat "LocalLLM-${VERSION}.apk.sha256"
+
+      - name: Publish to the releases repository
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          if gh release view "$TAG" --repo "$RELEASES_REPO" >/dev/null 2>&1; then
+            echo "Error: $TAG already exists in $RELEASES_REPO. Published releases are never overwritten."
+            exit 1
+          fi
+          gh release create "$TAG" --repo "$RELEASES_REPO" \
+            --title "LocalLLM $VERSION" \
+            --notes "On-device Gemma 4 inference host. Install before the client apps so the inference permission is granted." \
+            "dist/LocalLLM-${VERSION}.apk" "dist/LocalLLM-${VERSION}.apk.sha256"
+
+      - name: Re-download and independently verify the published assets
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          mkdir -p /tmp/verify && cd /tmp/verify
+          gh release download "$TAG" --repo "$RELEASES_REPO" --clobber
+          shasum -a 256 -c "LocalLLM-${VERSION}.apk.sha256"
+          BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$BUILD_TOOLS/apksigner" verify --print-certs "LocalLLM-${VERSION}.apk"
+          echo "Published and verified: $TAG"
