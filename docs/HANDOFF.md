@@ -1,13 +1,13 @@
 # Handoff
 
-Last updated: 2026-08-18. Rewritten after Poop Schedule 1.2.0 shipped; the previous
-version described the nudge as unfinished and is superseded.
+Last updated: 2026-08-18. Updated after LocalLLM 0.1.2 shipped; the previous version
+listed 0.1.1 as current and described the insight cards as working, which they were not.
 
 ## Where everything stands
 
 | Repository | Released | State |
 | --- | --- | --- |
-| `noamvb/local-llm` | **v0.1.1** | Public. Releases publish in-repo. No open PRs. |
+| `noamvb/local-llm` | **v0.1.2** | Public. Releases publish in-repo. No open PRs. |
 | `noamvb/poop-schedule` | **v1.2.0** | Private, releases to `poop-schedule-releases`. No open PRs. Insight card **and** nudge shipped. |
 | `noamvb/cannsheet-mobile` | **v1.4.0** | Public, releases to `cannsheet-mobile-releases`. Open: **#96** (clean, v1.4.0 provenance) and **#89** (stale since 15 Aug, `mergeStateStatus` UNKNOWN). |
 
@@ -18,6 +18,7 @@ trusting the pipeline:
 | --- | --- | --- | --- |
 | Poop Schedule 1.2.0 | 19 | `98198cd1…a55cde` | identical to 1.1.0 |
 | Cannsheet Mobile 1.4.0 | — | `a9787249…08665e` | identical to 1.3.4 |
+| LocalLLM 0.1.2 | 3 | `f1f2632b…d3b95d` | identical to 0.1.1 |
 
 Both digests are the ones `local-llm`'s `app/src/main/res/values/known_signers.xml` grants
 inference permission to, so a clean install binds. Obtainium updates both in place.
@@ -33,6 +34,15 @@ Verified on the Galaxy Z Fold 7 (`SM8750`, Android 16):
   whole point of the `knownSigner` permission.
 - Graceful degradation with no model present: the card renders nothing rather than an error.
 
+**Regression found and fixed on 2026-08-18 (0.1.2).** The insight cards stopped appearing
+in *both* clients, and the model appeared to need re-downloading after every close. One
+cause: `LiteRtEngine.prepare()` caught `Throwable`, which includes `CancellationException`,
+and deleted the model plus its `.part`. The download ran in `viewModelScope`, so leaving the
+app cancelled it and triggered the delete. Because both clients gate on
+`EngineStatus.modelDownloaded`, a deleted model makes the card render nothing — silently, by
+design. Measured on the Fold: 2.08 GB before the Insights path ran, 70.14 MB after, with no
+`.part` surviving. Fixed in #4; see `docs/DECISIONS.md`.
+
 **Not verified, and do not claim otherwise:**
 
 1. **No nudge has ever been delivered on a device.** The code path has unit tests and has
@@ -44,13 +54,21 @@ Verified on the Galaxy Z Fold 7 (`SM8750`, Android 16):
    screen to check which one appears. This needs the owner's eyes; it cannot be seen over
    `adb`.
 3. **Cannsheet's insight card has never rendered on a device.** It is green in CI only.
+4. **The 0.1.2 fix is not confirmed on a device.** `ModelStoreTest` covers the resume
+   contract, but the `LiteRtEngine` change is compile-verified only — testing it needs a
+   `Context` and a fake litertlm `Engine`. Nobody has yet interrupted a real download and
+   watched it resume from its `.part`.
 
 ## Do this first
 
-1. Decide on Cannsheet **#96** (clean) and **#89** (stale, created 15 Aug, merge state
+1. **Install 0.1.2, re-download the model, and confirm both cards come back.** The model
+   was deleted by the bug above, so one more full download is unavoidable; the point is
+   that it should be the last. Interrupt it once part-way to check it resumes rather than
+   restarting.
+2. Decide on Cannsheet **#96** (clean) and **#89** (stale, created 15 Aug, merge state
    UNKNOWN — likely needs its branch updated or closing).
-2. Watch for the first real nudge and check the lock screen. That closes items 1 and 2 above.
-3. **Back up `/Users/sophiaparis/LocalLLM-signing/`.** Still outstanding. It exists nowhere
+3. Watch for the first real nudge and check the lock screen. That closes items 1 and 2 above.
+4. **Back up `/Users/sophiaparis/LocalLLM-signing/`.** Still outstanding. It exists nowhere
    but that folder and the `RELEASE_KEYSTORE_BASE64` secret. Lose both and LocalLLM is
    permanently un-updatable — every user would have to uninstall and re-download the model.
 
