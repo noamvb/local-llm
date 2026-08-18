@@ -1,12 +1,9 @@
 package com.noamv.localllm.service
 
-import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
-import android.content.pm.ServiceInfo
-import android.os.Build
 import android.os.IBinder
 import android.os.RemoteException
 import android.util.Log
@@ -90,7 +87,6 @@ class InferenceService : Service() {
             }
 
             val job = scope.launch {
-                enterForeground()
                 val builder = StringBuilder()
                 try {
                     engine.prepare { percent, stage -> callback.safeProgress(requestId, percent, stage) }
@@ -112,7 +108,6 @@ class InferenceService : Service() {
                     callback.safeError(requestId, LocalLlmError.INTERNAL, error.message.orEmpty())
                 } finally {
                     inFlight.remove(requestId)
-                    if (inFlight.isEmpty()) exitForeground()
                 }
             }
             inFlight[requestId] = job
@@ -141,30 +136,27 @@ class InferenceService : Service() {
         if (error is RemoteException) Log.d(TAG, "Client went away", error) else throw error
     }
 
-    private fun enterForeground() {
-        val notification: Notification = Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle(getString(R.string.app_name))
-            .setContentText("Generating a summary on this device")
-            .setSmallIcon(android.R.drawable.stat_sys_download)
-            .setOngoing(true)
-            .build()
-        runCatching {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                startForeground(
-                    NOTIFICATION_ID,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
-                )
-            } else {
-                startForeground(NOTIFICATION_ID, notification)
-            }
-        }.onFailure { Log.w(TAG, "Could not enter the foreground", it) }
-    }
-
-    private fun exitForeground() {
-        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
-    }
-
+    /**
+     * Deliberately NOT promoted to the foreground while serving a bound request.
+     *
+     * The obvious design — promote for the duration of generation so the work survives —
+     * is wrong here and actively dangerous. An app targeting API 31+ may not start a
+     * foreground service from the background, and the system evaluates that against the
+     * *binding client's* live eligibility at the moment startForeground() is called
+     * (ActiveServices.canBindingClientStartFgsLocked). A client running an ordinary
+     * WorkManager job holds no such eligibility, so the call is denied and
+     * ForegroundServiceStartNotAllowedException is thrown into THIS process, gated on
+     * this app's targetSdk. The client cannot catch it. This service would die mid
+     * generation and the client would see only a DeadObjectException.
+     *
+     * Promotion is also unnecessary. While a client holds a BIND_AUTO_CREATE binding,
+     * this process is pulled up by that binding for as long as it lasts, so it is neither
+     * frozen nor a near-term low-memory kill candidate for the ten to sixty seconds a
+     * generation takes. A client that needs a stronger guarantee should run its own
+     * foreground service around the request; the binding then propagates that state here.
+     *
+     * See docs/DECISIONS.md.
+     */
     private fun createNotificationChannel() {
         val channel = NotificationChannel(
             CHANNEL_ID,

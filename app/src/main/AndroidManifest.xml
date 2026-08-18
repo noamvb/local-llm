@@ -7,8 +7,6 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Download and inference progress notifications. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <!--
       Only this app's own signature, or one of the certificates listed in
@@ -65,19 +63,18 @@
         <!--
           The cross-app inference service.
 
-          foregroundServiceType=specialUse is the honest classification: this is local
-          computation, not a data sync. dataSync would be a poor fit because Android 15
-          caps it at roughly six hours per day, and shortService caps a run at three
-          minutes with no extension.
+          It is NOT a foreground service. Promoting it while serving a bound request would
+          be denied whenever the calling client is itself in the background, because the
+          system evaluates the binding client's eligibility, and the resulting
+          ForegroundServiceStartNotAllowedException lands in this process where the client
+          cannot catch it. The BIND_AUTO_CREATE binding already keeps this process alive
+          for the duration. A client needing a stronger guarantee runs its own foreground
+          service around the request and the state propagates over the binding.
         -->
         <service
             android:name=".service.InferenceService"
             android:exported="true"
-            android:foregroundServiceType="specialUse"
             android:permission="com.noamv.localllm.permission.INFERENCE">
-            <property
-                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="On-device language model inference for the owner's own apps" />
             <intent-filter>
                 <action android:name="com.noamv.localllm.action.BIND_INFERENCE" />
             </intent-filter>

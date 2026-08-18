@@ -64,13 +64,16 @@ contiguous allocation. Two decisions follow:
 A fresh `Conversation` is created per request. Conversations are cheap and this keeps
 state from leaking between the two client apps.
 
-## Foreground service
+## Why there is no foreground service
 
-Generation is promoted to the foreground for its duration using
-`foregroundServiceType="specialUse"`. The alternatives were worse: `dataSync` is capped
-at roughly six hours a day on Android 15, and `shortService` caps a single run at three
-minutes with no extension. Without foreground promotion, a generation started by a
-backgrounded client is liable to be killed and the client just sees the stream stop.
+Generation is **not** wrapped in a foreground service, and the app declares no
+`foregroundServiceType` at all. Promoting a bound service is denied whenever the calling
+client is itself in the background, because the system evaluates the *binding client's*
+eligibility and then throws `ForegroundServiceStartNotAllowedException` into *this*
+process, where the client cannot catch it. The `BIND_AUTO_CREATE` binding already keeps
+this process alive for the duration of a request. A client that wants a stronger guarantee
+runs its own foreground service around the call, and that state propagates over the
+binding. See `docs/DECISIONS.md`.
 
 ## Model selection
 
