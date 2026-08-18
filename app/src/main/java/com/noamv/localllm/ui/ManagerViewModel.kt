@@ -25,6 +25,7 @@ import kotlinx.coroutines.launch
 class ManagerViewModel(
     private val engine: LlmEngine,
     private val build: ModelBuild,
+    private val startPreparing: () -> Unit,
 ) : ViewModel() {
 
     val status: StateFlow<EngineStatus> = engine.status
@@ -36,12 +37,13 @@ class ManagerViewModel(
     val modelSizeGb: Double get() = build.sizeGb
     val chipset: String? get() = LiteRtEngine.boardPlatform()
 
-    fun prepare() {
-        viewModelScope.launch {
-            runCatching { engine.prepare() }
-                .onFailure { _selfTest.value = "Preparation failed: ${it.message}" }
-        }
-    }
+    /**
+     * Starts the download and load on the application scope rather than
+     * [viewModelScope], so that closing this screen does not abandon a multi-gigabyte
+     * transfer. Progress and any failure arrive through [status], which the screen
+     * already renders.
+     */
+    fun prepare() = startPreparing()
 
     /**
      * Exercises the whole pipeline with fixed facts, so the owner can tell the model is
@@ -80,6 +82,7 @@ class ManagerViewModel(
                         board = LiteRtEngine.boardPlatform(),
                         npuDispatchAvailable = LiteRtEngine.hasNpuDispatchLibraries(app),
                     ),
+                    startPreparing = { app.prepareModel() },
                 )
             }
         }

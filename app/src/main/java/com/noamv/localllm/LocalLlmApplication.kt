@@ -1,9 +1,16 @@
 package com.noamv.localllm
 
 import android.app.Application
+import android.util.Log
 import com.noamv.localllm.engine.LiteRtEngine
 import com.noamv.localllm.engine.LlmEngine
 import com.noamv.localllm.model.ModelStore
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
 
@@ -31,6 +38,42 @@ class LocalLlmApplication : Application() {
 
     val engine: LlmEngine by lazy { LiteRtEngine(this, modelStore) }
 
+    /**
+     * Scope for work that has to outlive whatever screen started it.
+     *
+     * It is never cancelled: it is the process, not a component. Nothing here is tied to
+     * a UI lifecycle, so there is nothing to release.
+     */
+    private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    @Volatile
+    private var prepareJob: Job? = null
+
+    /**
+     * Downloads and loads the model, and keeps going when the user leaves.
+     *
+     * This deliberately does not run in a ViewModel's scope. It used to, and closing the
+     * manager screen therefore cancelled a two-gigabyte download part-way through — the
+     * single most expensive thing this app does. Repeat calls join the run already in
+     * flight rather than starting a second one; [LlmEngine.prepare] is idempotent, but
+     * queueing redundant calls behind its lock is still wasteful.
+     *
+     * Progress and failures are published through [engine] status, which the UI observes,
+     * so nothing is lost by not returning them here.
+     */
+    fun prepareModel(): Job {
+        prepareJob?.takeIf { it.isActive }?.let { return it }
+        return applicationScope.launch {
+            try {
+                engine.prepare()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                Log.w(TAG, "Model preparation failed", error)
+            }
+        }.also { prepareJob = it }
+    }
+
     // The granular TRIM_MEMORY_* levels are deprecated from API 34, but no replacement
     // signal exists for "the system is about to kill you". Releasing the model is drastic;
     // being killed outright mid-generation is worse, so the next request pays a reload.
@@ -40,5 +83,9 @@ class LocalLlmApplication : Application() {
         if (level >= TRIM_MEMORY_RUNNING_CRITICAL) {
             engine.close()
         }
+    }
+
+    companion object {
+        private const val TAG = "LocalLlmApplication"
     }
 }
