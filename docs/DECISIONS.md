@@ -2,6 +2,45 @@
 
 Durable choices and the evidence behind them. Newest first.
 
+## 2026-08-18 — Pin kotlinx-coroutines to 1.11.0
+
+**Decision.** `kotlinxCoroutines = "1.11.0"`, which is newer than the version
+`litertlm-android` declares in its own POM.
+
+**Why.** Any older version crashed the process the instant a generation finished:
+
+```
+java.lang.NoSuchMethodError: No static method
+  close$default(Lkotlinx/coroutines/channels/SendChannel;Ljava/lang/Throwable;ILjava/lang/Object;)Z
+  at com.google.ai.edge.litertlm.Conversation$sendMessageAsync$1$1.onDone(Conversation.kt:452)
+```
+
+LiteRT-LM's `sendMessageAsync` Flow bridge calls `close$default` as a **static method on
+the `SendChannel` interface itself**. Kotlin only emits it there when the library is
+compiled with the `jvm-default` behaviour that became standard in Kotlin 2.2; older
+coroutines releases put that synthetic in `SendChannel$DefaultImpls` instead. LiteRT-LM
+0.16.1 is built with Kotlin 2.2.21 and needs the newer layout.
+
+Both 1.10.2 and 1.9.0 fail identically. `litertlm-android:0.16.1` *declares*
+`kotlinx-coroutines-android:1.9.0`, so trusting its POM and pinning down made things no
+better — the declared version is simply not the one it was built against. Only 1.11.0
+works, verified on a Galaxy Z Fold 7.
+
+**Consequences.**
+
+- Do not "fix" a coroutines conflict by matching the POM here; the POM is misleading.
+- The symptom is deferred and points at the wrong place. Inference completes and tokens
+  are produced; the process dies during channel teardown, which reads like a bug in the
+  streaming code rather than a dependency mismatch.
+- If a future LiteRT-LM bump reintroduces this, the durable escape is to stop using its
+  Flow bridge and drive the plain `MessageCallback` overload through our own
+  `callbackFlow`. That removes the dependency on its internal coroutines ABI entirely.
+
+**The general lesson.** A prebuilt library that bridges native callbacks into coroutines
+is bound to the coroutines ABI it was *compiled* against, which its published metadata may
+not name. When the failure is a `NoSuchMethodError` on a `$default` synthetic, the
+question is which Kotlin version generated the caller, not which version the POM requests.
+
 ## 2026-08-18 — Ship the GPU model build, not the NPU one
 
 **Decision.** The app selects the portable GPU build of Gemma 4 E2B. The chipset-specific

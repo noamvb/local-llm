@@ -9,7 +9,7 @@ composeBom = "2024.09.00"
 navigationCompose = "2.8.9"
 datastorePreferences = "1.1.7"
 work = "2.11.2"
-kotlinxCoroutines = "1.10.2"
+kotlinxCoroutines = "1.11.0"
 kotlinxSerialization = "1.7.3"
 okhttp = "4.12.0"
 # On-device inference runtime. MediaPipe tasks-genai is maintenance-only; LiteRT-LM supersedes it.
