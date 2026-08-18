@@ -1,51 +1,73 @@
 # Handoff
 
-Last updated: 2026-08-18. Written because a session ended mid-feature.
+Last updated: 2026-08-18. Rewritten after Poop Schedule 1.2.0 shipped; the previous
+version described the nudge as unfinished and is superseded.
 
 ## Where everything stands
 
-| Repository | State |
-| --- | --- |
-| `noamvb/local-llm` | **v0.1.0 released** and public. Releases publish in-repo; no PAT needed. Open: **PR #1** (foreground-service fix, described below). |
-| `noamvb/poop-schedule` | **v1.1.0 released**, insight card verified end to end on real records. Open: branch `feature/localllm-nudge` (WIP, not functional). |
-| `noamvb/cannsheet-mobile` | Open: **PR #94**, insight card. All checks green. Not device-verified. ADR-024 merged. |
+| Repository | Released | State |
+| --- | --- | --- |
+| `noamvb/local-llm` | **v0.1.1** | Public. Releases publish in-repo. No open PRs. |
+| `noamvb/poop-schedule` | **v1.2.0** | Private, releases to `poop-schedule-releases`. No open PRs. Insight card **and** nudge shipped. |
+| `noamvb/cannsheet-mobile` | **v1.4.0** | Public, releases to `cannsheet-mobile-releases`. Open: **#96** (clean, v1.4.0 provenance) and **#89** (stale since 15 Aug, `mergeStateStatus` UNKNOWN). |
 
-On the phone (Galaxy Z Fold 7, `SM8750`, Android 16): release-signed LocalLLM 0.1.0 with
-the Gemma 4 E2B GPU model downloaded, and release-signed Poop Schedule 1.1.0. The card
-works.
+All three publications were verified by downloading the asset and checking it, not by
+trusting the pipeline:
+
+| App | versionCode | Signer SHA-256 | Continuity |
+| --- | --- | --- | --- |
+| Poop Schedule 1.2.0 | 19 | `98198cd1…a55cde` | identical to 1.1.0 |
+| Cannsheet Mobile 1.4.0 | — | `a9787249…08665e` | identical to 1.3.4 |
+
+Both digests are the ones `local-llm`'s `app/src/main/res/values/known_signers.xml` grants
+inference permission to, so a clean install binds. Obtainium updates both in place.
+
+## What is verified, and what only looks verified
+
+Verified on the Galaxy Z Fold 7 (`SM8750`, Android 16):
+
+- LocalLLM 0.1.x loads Gemma 4 E2B on the GPU and reaches `READY`.
+- Poop Schedule's insight card generates against **real records**, every figure matching
+  the app's own statistics (33 entries / 7.7 per week / 21 h 2 min / 11 min).
+- `INFERENCE: granted=true` across two *different* signing certificates, which is the
+  whole point of the `knownSigner` permission.
+- Graceful degradation with no model present: the card renders nothing rather than an error.
+
+**Not verified, and do not claim otherwise:**
+
+1. **No nudge has ever been delivered on a device.** The code path has unit tests and has
+   never once run to a posted notification. It fires only when there are ≥5 entries across
+   ≥3 distinct days in a 7-day window with ≥6 days since the last nudge, so the first real
+   one arrives on its own schedule.
+2. **`setPublicVersion` behaviour is unconfirmed.** The owner chose full detail on the lock
+   screen with a neutral public version for casting/DeX. Nobody has looked at a locked
+   screen to check which one appears. This needs the owner's eyes; it cannot be seen over
+   `adb`.
+3. **Cannsheet's insight card has never rendered on a device.** It is green in CI only.
 
 ## Do this first
 
-1. **Merge PR #1 on `local-llm` and release v0.1.1.** It removes a latent crash. Follow
-   the release gate: land it, wait for the push-to-`main` run on the exact SHA to go green
-   on both jobs, bump `versionCode`/`versionName`, then tag. The tag must be the tip of
-   `main`.
-2. Decide on **PR #94** (Cannsheet). It is green but has never run on a device.
-3. Continue the nudge, below.
+1. Decide on Cannsheet **#96** (clean) and **#89** (stale, created 15 Aug, merge state
+   UNKNOWN — likely needs its branch updated or closing).
+2. Watch for the first real nudge and check the lock screen. That closes items 1 and 2 above.
+3. **Back up `/Users/sophiaparis/LocalLLM-signing/`.** Still outstanding. It exists nowhere
+   but that folder and the `RELEASE_KEYSTORE_BASE64` secret. Lose both and LocalLLM is
+   permanently un-updatable — every user would have to uninstall and re-download the model.
 
-## The nudge: what is done and what blocks it
+## The nudge, as actually built
 
-Branch `feature/localllm-nudge` on `poop-schedule`, commit `b213b0c`. It compiles nothing
-useful yet and delivers no notification. `NudgeWorker.doWork` returns early with a TODO.
-
-Done and unit-tested: `NudgeSchedule` (due check), `NudgeText` (output sanitising), the
-notification channel, the settings, and the WorkManager trigger.
-
-**The blocker, and it is a real one.** The worker cannot simply bind LocalLLM and wait.
+The original plan — worker binds LocalLLM, LocalLLM promotes itself to the foreground for
+the generation — is impossible, and the reasoning is worth keeping because it is not
+obvious:
 
 An app targeting API 31+ cannot start a foreground service from the background. For a
-*bound* service the system does not evaluate the service's own state — it walks the
-binding clients and re-runs the check against each
-(`ActiveServices.canBindingClientStartFgsLocked`, yielding `REASON_FGS_BINDING`). Binding
-**propagates** a client's existing eligibility; it never creates any. A client running an
-ordinary WorkManager job has none.
-
-So the original plan — worker binds, LocalLLM promotes itself for the generation — fails,
-and fails badly: `ForegroundServiceStartNotAllowedException` is thrown into *LocalLLM's*
-process, gated on *LocalLLM's* `targetSdk`, where the client cannot catch it. LocalLLM
-would die mid-generation and the client would see only `DeadObjectException`. PR #1 removes
-that promotion entirely, which stops the crash but leaves long background generations
-unprotected.
+*bound* service the system does not evaluate the service's own state; it walks the binding
+clients and re-runs the check against each (`ActiveServices.canBindingClientStartFgsLocked`,
+yielding `REASON_FGS_BINDING`). Binding **propagates** a client's existing eligibility and
+never creates any. A plain WorkManager job has none. Worse, the resulting
+`ForegroundServiceStartNotAllowedException` is thrown into *LocalLLM's* process, gated on
+*LocalLLM's* `targetSdk`, where the client cannot catch it — LocalLLM would die mid-generation
+and the client would see only `DeadObjectException`.
 
 Dead ends, already checked so nobody re-checks them:
 
@@ -55,56 +77,75 @@ Dead ends, already checked so nobody re-checks them:
   `@hide`, `@SystemApi`, deprecated and permission-gated.
 - Exact alarms give a foreground-service allowlist window of about **ten seconds**, nowhere
   near enough for a cold Gemma load.
+- `shortService` is wrong even though it sounds right: AOSP explicitly withholds
+  `PROCESS_CAPABILITY_BFSL` from short services.
 
-**The remaining work**, in order:
+**What shipped instead.** LocalLLM no longer calls `startForeground` at all on the bound
+path (v0.1.1). The foreground service is owned by the *client*: `NudgeWorker` calls
+`setForeground` with `FOREGROUND_SERVICE_TYPE_SPECIAL_USE`, and eligibility comes from the
+battery-optimisation allowlist, which is the only exemption a headless weekly worker can
+hold. The worker checks notifications → due → model present → battery exemption **before**
+generating, so it never wakes the model to throw the result away, and always returns
+`Result.success()` so WorkManager does not back off.
 
-1. Add a `specialUse` foreground service **owned by Poop Schedule**. Not `shortService` —
-   AOSP explicitly withholds `PROCESS_CAPABILITY_BFSL` from short services. Needs
-   `FOREGROUND_SERVICE_SPECIAL_USE` and the subtype `<property>`. Its own notification must
-   be neutral ("Preparing weekly summary"), carry no statistic, and be `VISIBILITY_PRIVATE`
-   — it is on the lock screen too while generation runs.
-2. Make the client foreground-service eligible. The only exemption a headless weekly worker
-   can hold is the battery-optimisation allowlist: prompt once with
-   `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`, or the owner sets Battery → Unrestricted.
-3. Add `Repository.entriesSince(Instant): Int`. It does not exist.
-4. Have the worker start that service, bind, request `InsightTask.NUDGE`, validate, post,
-   then `setLastNudgeAt`.
+**Output is never trusted.** `NudgeText.validate` rejects a generated sentence that invents
+a number, uses clinical language, refuses, leaks the prompt, runs to multiple sentences, or
+carries control/bidi-override characters. Numeric grounding normalises number *words* to
+digits first — the model writes `"33 entries"` and `"twelve entries"` interchangeably, both
+observed, so a digit-only check passes trivially by finding no digits at all. The rejection
+reason surfaces in a Settings row, because otherwise silence is indistinguishable from a bug.
 
-## Decisions already made with the owner
+## CI: the emulator job used to hang forever
 
-- **Lock screen: full detail, but not while screen sharing.** The owner asked for no
-  content restriction and was then told that `VISIBILITY_PUBLIC` also exposes content
-  during casting, DeX and screen sharing. They chose full detail on the lock screen with a
-  neutral `setPublicVersion` for the shared-screen case. **Not yet implemented.**
-- **The model writes freely** from the facts rather than phrasing an app-selected fact.
-  The owner chose this against the recommendation, which makes validation heuristic rather
-  than complete, so `NudgeText` must carry more weight.
-- **Numeric grounding is therefore required and not yet written.** Every number in the
-  generated sentence must appear in the fact set the client computed. The trap: the model
-  writes both `"33 entries"` and `"twelve entries"` — observed, both real outputs — so
-  number words must be normalised to digits first or the check passes trivially by finding
-  no digits at all.
-- Still to add to `NudgeText`: a clinical-language denylist (`diagnos`, `symptom`, `IBS`,
-  `see a doctor`, healthy/unhealthy as a verdict) and a single-sentence shape check.
+Both Android repos run `reactivecircus/android-emulator-runner`. Its teardown is a bare
+`adb emu kill` with **no timeout around it**, so anything still holding the emulator's
+shared client connection stalls the step until the job timeout. Two distinct causes, both
+fixed in `poop-schedule`'s `android-pr-checks.yml`; apply the same fix if `cannsheet-mobile`
+ever starts hanging:
+
+1. **`crashpad_handler` outlives the emulator.** It is a sibling of qemu, holds
+   `--initial-client-fd`, and the runner only reaps it at `Complete job` — a line a hung job
+   never reaches. Kill it explicitly.
+2. **Process names are truncated to 15 characters by Linux.** `ps -eo comm` reports
+   `qemu-system-x86` and `crashpad_handle`, so `pkill -x qemu-system-x86_64` matches nothing.
+   Measure the name; do not guess it. Use `-x`, not `-f` — `-f` matches `pkill`'s own command
+   line and kills the shell.
+3. **The action feeds `script:` to `sh -c` one line at a time.** Every line appears in the
+   log as its own `/usr/bin/sh -c <line>`. Multi-line shell constructs are impossible; a
+   `for` loop dies with `end of file unexpected (expecting "done")`. Keep it on one line.
+
+Result: the emulator job runs ~5m20s with a 0.15-second teardown.
+
+**Reading a stuck run.** The API cannot serve logs for an in-progress run — `gh run view
+--log` returns `BlobNotFound`. A run that hangs never completes, so its logs are *only*
+visible in the browser. Diagnosing from runs that actually failed gives a false picture,
+because the failing runs are not the stuck ones.
 
 ## Things that will bite
 
 - **Never narrate an absence.** A gap in logging is itself sensitive — people stop logging
   when unwell, travelling, or low. "You haven't logged in twelve days" on a lock screen is
-  the regrettable outcome, and it is exactly what a naive summariser produces. The
-  four-entry floor exists for this, not for tidiness. Keep the nudge and the existing
-  inactivity reminder semantically separate.
-- **Every failure in this feature is silent by construction.** Notifications are off by
-  default on Android 13+ and `notify()` is dropped with no exception and no log. The worker
-  already gates on this, but the feature still needs a visible in-app row — "Last nudge:
-  Aug 11, posted" / "skipped: notifications disabled" / "skipped: only 2 entries" — or it
-  is undebuggable.
-- **Never put generated text in logcat.** `adb logcat` is readable by anyone with the
+  the regrettable outcome, and it is exactly what a naive summariser produces. The entry
+  floor exists for this, not for tidiness. Keep the nudge and the inactivity reminder
+  semantically separate.
+- **Failures here are silent by construction.** Notifications are off by default on
+  Android 13+ and `notify()` is dropped with no exception and no log. Hence the Settings
+  heartbeat row.
+- **Never put generated text in logcat.** `adb logcat` is readable by anyone holding the
   phone. Log an identifier; keep bodies in app storage.
-- **Pre-existing defect in `poop-schedule`:** `PeriodicWorkRequestBuilder(1, TimeUnit.DAYS)`
-  for `InactivityReminderWorker` uses the one-argument form, which sets flex equal to the
-  interval, so the reminder can fire at any hour. `NudgeScheduler` uses the two-argument
-  form; the reminder was left alone.
+- **Facts, not rows.** Clients send pre-computed, pre-formatted `Fact` values over the
+  binder. A 2B model is an unreliable arithmetician, and binder transactions cap near 1 MB.
+- **Cannsheet must never send projections.** `AGENTS.md` there requires runway/spend
+  projections not be persisted, transmitted, or treated as confirmed. `CannsheetLlmFacts`
+  sends only recorded figures, and takes its period from `response.range`, never the device
+  clock.
+- **litertlm 0.16.1 needs coroutines 1.11.0.** Its POM declares 1.9.0 but it was compiled
+  against newer; 1.9.0 and 1.10.2 both fail at runtime with
+  `NoSuchMethodError: close$default(SendChannel…)` *after* a successful generation.
+- **Pre-existing defect in `poop-schedule`:** `InactivityReminderWorker` uses the
+  one-argument `PeriodicWorkRequestBuilder(1, TimeUnit.DAYS)`, which sets flex equal to the
+  interval, so it can fire at any hour. `NudgeScheduler` uses the two-argument form; the
+  reminder was deliberately left alone.
 - **Samsung One UI** will put a weekly worker to sleep regardless. Best effort; say so in
   the UI rather than pretending.
 
@@ -115,15 +156,17 @@ export JAVA_HOME=/opt/homebrew/opt/openjdk@17
 export ANDROID_HOME=/opt/homebrew/share/android-commandlinetools
 ```
 
-- No Android Studio. `local.properties` in the two Drive repos points at a **Windows** SDK
-  path; do not edit it. Build those from a throwaway `git worktree` outside Drive with its
-  own `local.properties`, and `chmod +x gradlew` there.
+- No Android Studio. Build tools live at
+  `/opt/homebrew/share/android-commandlinetools/build-tools/36.0.0` — that is where
+  `aapt2` and `apksigner` are; they are not on `PATH`.
+- `local.properties` in the two Drive repos points at a **Windows** SDK path; do not edit
+  it. Build those from a throwaway `git worktree` outside Drive with its own
+  `local.properties`, and `chmod +x gradlew` there.
 - `adb` is at `/opt/homebrew/bin/adb`. The phone is already paired: `adb kill-server`, then
   `adb mdns services` for the `_adb-tls-connect` port, then `adb connect`. Do **not** re-pair.
 - Screenshots need an explicit display id on the foldable:
   `adb exec-out screencap -p -d 4630946872173396372`.
 - zsh does not word-split unquoted variables; inline `-s SERIAL` rather than using a var.
-- The signing keystore is at `/Users/sophiaparis/LocalLLM-signing/`. **It exists nowhere
-  else except the repository secret.** Losing it makes LocalLLM permanently un-updatable.
+- The owner asked to be told whenever their phone is in use, and when it is free again.
 - `noamvb/local-llm-releases` is an empty leftover repository; deleting it needs a
-  `delete_repo` token scope.
+  `delete_repo` token scope that this setup does not have.
