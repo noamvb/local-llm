@@ -2,6 +2,50 @@
 
 Durable choices and the evidence behind them. Newest first.
 
+## 2026-08-18 — The inference service is not a foreground service
+
+**Decision.** `InferenceService` no longer calls `startForeground` while serving a bound
+request. The `foregroundServiceType`, the `<property>` subtype and both
+`FOREGROUND_SERVICE*` permissions are removed.
+
+**Why.** The original design promoted the service for the duration of generation so a long
+request would survive. That is not merely unnecessary, it is a crash waiting for the first
+background-initiated request.
+
+An app targeting API 31+ may not start a foreground service from the background. For a
+bound service the system does not evaluate *this* app's state; it walks the binding clients
+and re-runs the check against them (`ActiveServices.canBindingClientStartFgsLocked`,
+yielding `REASON_FGS_BINDING`). Binding *propagates* a client's existing eligibility, it
+does not create any. A client running an ordinary WorkManager job has none, so the
+promotion is denied.
+
+The denial surfaces in the worst possible place. `ForegroundServiceStartNotAllowedException`
+is thrown into **this** process, gated on **this** app's `targetSdk`, so a `try/catch` in
+the client catches nothing. This service would die mid-generation and the client would
+observe only `onServiceDisconnected` and a `DeadObjectException` — a symptom that looks
+nothing like the cause. Android would also post its own "restricted" notification, so the
+owner gets system noise instead of a result.
+
+Promotion was never needed. While a client holds a `BIND_AUTO_CREATE` binding this process
+is pulled up by that binding, so it is neither frozen nor a near-term low-memory kill
+candidate for the ten to sixty seconds a generation takes.
+
+**Consequences.**
+
+- A client that needs a stronger guarantee runs **its own** foreground service around the
+  request; that state then propagates over the binding. Ownership of the foreground
+  service belongs with the app the user is actually interacting with.
+- `setExpedited` on WorkManager does not help. On API 31+ it is a JobScheduler expedited
+  job, not a foreground service, and confers no ability to start one.
+- There is no bind flag that grants this. `BIND_ALLOW_FOREGROUND_SERVICE_STARTS_FROM_BACKGROUND`
+  is `@hide`, `@SystemApi`, deprecated and permission-gated.
+- Verified on a Galaxy Z Fold 7 after the change: the Poop Schedule insight card still
+  generates, with no crash and no denial in logcat.
+
+**The general lesson.** For a bound service, background restrictions are evaluated against
+the caller, not the callee, but the exception is delivered to the callee. A service that
+promotes itself on behalf of an arbitrary client is holding a loaded gun pointed at itself.
+
 ## 2026-08-18 — Use signature|knownSigner, because the apps do not share a key
 
 **Decision.** The inference permission is `signature|knownSigner` with an
