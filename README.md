@@ -60,5 +60,11 @@ Copy the `client/src/main` tree into the client module, add `aidl = true` to its
 `buildFeatures`, and declare the permission and `<queries>` entry described at the top of
 `client/src/main/java/com/noamv/localllm/client/LocalLlmClient.kt`.
 
-Because the inference permission is signature-level, every participating app must be
-signed with the same certificate, and **LocalLLM must be installed before the clients**.
+The inference permission uses `signature|knownSigner`, so a client is granted access if
+it is signed either by LocalLLM's own key or by a certificate listed in
+`app/src/main/res/values/known_signers.xml`. The three apps in this family are signed by
+three different keys, so that list is what makes the permission work at all — adding a new
+client means adding its certificate digest and shipping a new LocalLLM.
+
+**LocalLLM must be installed before the clients**, because Android only grants a
+signature-level permission if the app defining it is already present.

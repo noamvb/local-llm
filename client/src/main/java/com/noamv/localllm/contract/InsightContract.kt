@@ -131,9 +131,20 @@ enum class EngineState {
 /** Returned by IInsightService.getEngineState(), serialised as JSON. */
 @Serializable
 data class EngineStatus(
+    /** Whether an engine is loaded right now. MODEL_MISSING means "not loaded". */
     val state: EngineState,
     val modelId: String? = null,
     val backend: String? = null,
     val downloadPercent: Int = -1,
     val detail: String = "",
+    /**
+     * True when the model file is already on disk, whether or not it is loaded.
+     *
+     * This is the field a client should check before deciding to ask for an insight.
+     * The service holds no engine until something asks for one, so a freshly started
+     * process reports MODEL_MISSING even with gigabytes of model sitting on disk. A
+     * client that waits for READY would therefore never ask, and the engine would never
+     * load. When this is true a request costs a few seconds of loading and no network.
+     */
+    val modelDownloaded: Boolean = false,
 )

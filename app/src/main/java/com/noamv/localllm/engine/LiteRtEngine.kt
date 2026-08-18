@@ -48,7 +48,11 @@ class LiteRtEngine(
         ModelCatalog.defaultFor(boardPlatform(), hasNpuDispatchLibraries(context))
 
     private val _status = MutableStateFlow(
-        EngineStatus(state = EngineState.MODEL_MISSING, modelId = preferredBuild.id),
+        EngineStatus(
+            state = EngineState.MODEL_MISSING,
+            modelId = preferredBuild.id,
+            modelDownloaded = store.isInstalled(preferredBuild),
+        ),
     )
     override val status: StateFlow<EngineStatus> = _status.asStateFlow()
 
@@ -110,6 +114,7 @@ class LiteRtEngine(
             modelId = build.id,
             downloadPercent = 100,
             detail = "Loading ${build.displayName}",
+            modelDownloaded = true,
         )
         onProgress(-1, STAGE_INITIALISING)
 
@@ -133,6 +138,7 @@ class LiteRtEngine(
             backend = build.backend.name,
             downloadPercent = 100,
             detail = "Ready",
+            modelDownloaded = true,
         )
         onProgress(100, STAGE_READY)
     }
@@ -160,8 +166,15 @@ class LiteRtEngine(
 
     override fun close() {
         closeQuietly()
-        _status.value = _status.value.copy(state = EngineState.MODEL_MISSING, detail = "Closed")
+        _status.value = _status.value.copy(
+            state = EngineState.MODEL_MISSING,
+            detail = "Closed",
+            modelDownloaded = activeOrPreferredInstalled(),
+        )
     }
+
+    private fun activeOrPreferredInstalled(): Boolean =
+        store.isInstalled(activeBuild ?: preferredBuild)
 
     private fun closeQuietly() {
         runCatching { engine?.close() }.onFailure { Log.w(TAG, "Engine close failed", it) }

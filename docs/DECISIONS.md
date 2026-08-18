@@ -2,6 +2,48 @@
 
 Durable choices and the evidence behind them. Newest first.
 
+## 2026-08-18 — Use signature|knownSigner, because the apps do not share a key
+
+**Decision.** The inference permission is `signature|knownSigner` with an
+`android:knownCerts` array of client certificate digests, not a plain `signature` check.
+
+**Why.** The original design assumed all three apps shipped from one personal keystore.
+That assumption was never verified and is false. Reading the actual APKs:
+
+| App | Certificate | SHA-256 |
+| --- | --- | --- |
+| Poop Schedule 1.0.1 | `CN=Poop Schedule` | `98198cd1…` |
+| Cannsheet Mobile 1.3.4 | `CN=Android Debug` | `a9787249…` |
+| LocalLLM | its own key | — |
+
+Three different certificates. A plain `signature` permission would have been granted to
+**none** of the intended clients. The bug was invisible during development because both
+apps under test were built on the same machine and therefore shared one debug key; it
+would have surfaced only after publishing, as a card that silently never appeared.
+
+`knownSigner` (API 31, this app's minimum) grants the permission when the requesting app's
+signing lineage matches any listed digest, which is exactly the multi-keystore case here.
+Verified on device: `prot=signature|knownSigner`.
+
+**Consequences.**
+
+- Adding a client is a LocalLLM change: read the digest from its *published* APK, add it
+  to `known_signers.xml`, ship a new LocalLLM. An installed one cannot learn a digest.
+- Digests must come from the published artefact. A locally built APK is signed with the
+  developer's debug key and will report a different digest than the release.
+- If Cannsheet ever moves to a real release keystore its digest changes, and LocalLLM
+  must be updated in the same cycle or the card disappears.
+
+**Separately observed, not changed here.** Cannsheet Mobile's *published* release APK is
+signed `CN=Android Debug`. Its `release-apk.yml` applies release signing only when the
+keystore environment variables are present and otherwise falls back to debug signing
+silently. Debug keystores are unpassworded and machine-local, so losing that file makes
+in-place updates impossible forever. That is the repository owner's call to make, and out
+of scope for this project, but it is why Cannsheet's digest above looks the way it does.
+
+**The general lesson.** Verify the certificate, do not infer it from who built the app.
+The check is one command against the published artefact.
+
 ## 2026-08-18 — Pin kotlinx-coroutines to 1.11.0
 
 **Decision.** `kotlinxCoroutines = "1.11.0"`, which is newer than the version

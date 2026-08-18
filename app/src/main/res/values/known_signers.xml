@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SHA-256 digests of the signing certificates permitted to use the inference service.
+
+  These are NOT interchangeable with the app's own signature. The three apps in this
+  family are signed by three different keys, so a plain "signature" permission would
+  never be granted to any of them:
+
+    Poop Schedule   CN=Poop Schedule   98198cd1...
+    Cannsheet Mobile CN=Android Debug  a9787249...
+    LocalLLM         (its own key)
+
+  Verified from the installed and published APKs on 2026-08-18 with
+  the apksigner certificate-printing option. See docs/DECISIONS.md.
+
+  To add a client: publish it, read its digest with apksigner, add it here, and ship a
+  new LocalLLM. A digest cannot be added retroactively to an already-installed LocalLLM.
+-->
+<resources>
+    <string-array name="localllm_known_signers">
+        <!-- Poop Schedule (noamvb/poop-schedule-releases) -->
+        <item>98198cd143954c564faa0cc6408918edbc1a2311f2f4817cfe89223923a55cde</item>
+        <!-- Cannsheet Mobile (noamvb/cannsheet-mobile-releases) -->
+        <item>a9787249b106d98a421ed839789361a45753e367e243820d10d2f3a09708665e</item>
+    </string-array>
+</resources>

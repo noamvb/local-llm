@@ -31,15 +31,23 @@ tracker gains an inference dependency, and the 2 GB model exists once on the dev
 ## Security model
 
 Access is controlled by one custom permission declared with
-`android:protectionLevel="signature"`. Android grants it only to apps signed with the
-same certificate as LocalLLM. All three apps ship from the one personal keystore, so the
-check costs nothing and no third-party app can reach the model or the data sent to it.
+`android:protectionLevel="signature|knownSigner"` plus an `android:knownCerts` array.
+Android grants it to apps signed by LocalLLM's own key **or** by any certificate whose
+SHA-256 digest appears in `app/src/main/res/values/known_signers.xml`.
 
-Two consequences worth remembering:
+A plain `signature` permission does not work here, and assuming it did was a real defect.
+The three apps are signed by three different keys — Poop Schedule with its own release
+keystore, Cannsheet Mobile with a debug certificate, LocalLLM with its own — so a plain
+signature check would have been granted to none of them. `knownSigner` requires API 31,
+which is this app's minimum.
+
+Three consequences worth remembering:
 
 1. **Install order matters.** A signature permission is granted only if the app that
    *defines* it is already installed. Install or update LocalLLM before the clients.
-2. **Package visibility.** From Android 11, a client cannot even see the service unless
+2. **Adding a client is a LocalLLM change.** Its certificate digest must be added to the
+   array and a new LocalLLM shipped; an installed one cannot learn a new digest.
+3. **Package visibility.** From Android 11, a client cannot even see the service unless
    it declares `<queries><package android:name="com.noamv.localllm" /></queries>`.
    Without it `bindService` returns `false` and nothing else explains why.
 

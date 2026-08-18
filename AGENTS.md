@@ -30,8 +30,10 @@ so `org.jetbrains.kotlin.android` must **not** be applied separately.
 - **The safety defaults in `SafetyPolicy` stay strict by default.** Health claims,
   diagnosis, causal language and invented numbers are forbidden in the system
   instruction unless a caller deliberately opts out.
-- **The inference permission stays `signature`.** Never lower it to `normal` or
-  `dangerous`, and never export the service without it.
+- **The inference permission stays `signature|knownSigner`.** Never lower it to `normal`
+  or `dangerous`, and never export the service without it. Client certificate digests
+  live in `app/src/main/res/values/known_signers.xml`; verify a digest from the actual
+  published APK before adding it, never from an assumption about which key was used.
 - **Model files are verified before use.** Never skip the SHA-256 check, and never keep
   a file that fails it.
 - **Never commit keystores, credentials, or model binaries.**

@@ -11,19 +11,25 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <!--
-      Only apps signed with the SAME certificate as this app may bind the inference
-      service. Cannsheet Mobile, Poop Schedule and LocalLLM all ship from the one
-      personal keystore, so signature protection costs nothing and means no other
-      installed app can reach the model or the data being sent to it.
+      Only this app's own signature, or one of the certificates listed in
+      @array/localllm_known_signers, may bind the inference service. No other installed
+      app can reach the model or the data being sent to it.
 
-      Known ordering hazard: a signature permission is only granted if the app that
-      DEFINES it is installed first. Install or update LocalLLM before the clients.
+      knownSigner is required rather than a plain signature check because the three apps
+      are signed by three DIFFERENT keys: Poop Schedule with its own release keystore,
+      Cannsheet Mobile with a debug certificate, and this app with its own. A plain
+      "signature" permission would be granted to none of them. knownSigner needs API 31,
+      which is this app's minimum.
+
+      Known ordering hazard: the permission is only granted if the app that DEFINES it is
+      installed first. Install or update LocalLLM before the clients.
     -->
     <permission
         android:name="com.noamv.localllm.permission.INFERENCE"
         android:label="@string/permission_inference_label"
         android:description="@string/permission_inference_description"
-        android:protectionLevel="signature" />
+        android:protectionLevel="signature|knownSigner"
+        android:knownCerts="@array/localllm_known_signers" />
 
     <uses-permission android:name="com.noamv.localllm.permission.INFERENCE" />
 
