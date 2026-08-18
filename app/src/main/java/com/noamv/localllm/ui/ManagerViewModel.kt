@@ -76,7 +76,10 @@ class ManagerViewModel(
                 val app = this[APPLICATION_KEY] as LocalLlmApplication
                 ManagerViewModel(
                     engine = app.engine,
-                    build = ModelCatalog.defaultFor(LiteRtEngine.boardPlatform()),
+                    build = ModelCatalog.defaultFor(
+                        board = LiteRtEngine.boardPlatform(),
+                        npuDispatchAvailable = LiteRtEngine.hasNpuDispatchLibraries(app),
+                    ),
                 )
             }
         }

@@ -133,6 +133,23 @@ class ModelStore(
     /** Every model file currently on disk, including partials. */
     fun installedFiles(): List<File> = modelsDir.listFiles()?.toList().orEmpty()
 
+    /**
+     * Deletes every model file except [keep], returning the bytes reclaimed.
+     *
+     * Without this, changing the selected build silently strands the previous one. These
+     * files are two to three gigabytes each, so an orphan is not a tidiness problem — it
+     * is a meaningful chunk of the user's storage that nothing will ever reclaim.
+     */
+    fun pruneExcept(keep: ModelBuild): Long {
+        val keepName = keep.fileName
+        return installedFiles()
+            .filter { it.name != keepName }
+            .sumOf { file ->
+                val size = file.length()
+                if (file.delete()) size else 0L
+            }
+    }
+
     private suspend fun sha256Of(file: File): String = withContext(Dispatchers.IO) {
         val digest = MessageDigest.getInstance("SHA-256")
         file.inputStream().use { input ->

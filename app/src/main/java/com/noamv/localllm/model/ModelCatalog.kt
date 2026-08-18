@@ -91,15 +91,26 @@ object ModelCatalog {
     fun byId(id: String): ModelBuild? = all.firstOrNull { it.id == id }
 
     /**
-     * Picks a sensible default for the running device.
+     * Picks a build for the running device.
      *
-     * The NPU build is preferred when the board matches, because it is both faster and
-     * far kinder to the battery than the GPU path. Everything else falls back to the
-     * portable GPU build, which runs anywhere with an OpenCL driver.
+     * A matching chipset is necessary but NOT sufficient to use an NPU build. LiteRT-LM
+     * dispatches NPU work through vendor libraries (libQnnHtp*.so for Qualcomm) that are
+     * not part of the litertlm-android artifact. Google distributes them only inside the
+     * QAIRT SDK, to be built with Bazel and bundled by the app. This app does not ship
+     * them, so [npuDispatchAvailable] is false and the portable GPU build is used.
+     *
+     * Selecting an NPU build without those libraries does not fail at load time. It fails
+     * several seconds later, during the inference warm-up, with "No usable Dispatch
+     * runtime found" — which is why the check is on the libraries rather than the SoC.
      */
-    fun defaultFor(board: String?): ModelBuild {
+    fun defaultFor(board: String?, npuDispatchAvailable: Boolean = false): ModelBuild {
+        if (!npuDispatchAvailable) return E2B_GPU
         val normalised = board?.lowercase().orEmpty()
         return all.firstOrNull { it.requiresBoard != null && normalised.contains(it.requiresBoard) }
             ?: E2B_GPU
     }
+
+    /** Builds to try, in order, when [primary] cannot be initialised. */
+    fun fallbacksFor(primary: ModelBuild): List<ModelBuild> =
+        listOf(primary) + listOf(E2B_GPU, E2B_CPU).filter { it.id != primary.id }
 }

@@ -28,6 +28,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.File
 
 /**
  * [LlmEngine] backed by LiteRT-LM.
@@ -40,11 +41,14 @@ import kotlinx.coroutines.withContext
 class LiteRtEngine(
     private val context: Context,
     private val store: ModelStore,
-    private val selectedBuild: ModelBuild = ModelCatalog.defaultFor(boardPlatform()),
 ) : LlmEngine {
 
+    /** The build this device should try first. */
+    val preferredBuild: ModelBuild =
+        ModelCatalog.defaultFor(boardPlatform(), hasNpuDispatchLibraries(context))
+
     private val _status = MutableStateFlow(
-        EngineStatus(state = EngineState.MODEL_MISSING, modelId = selectedBuild.id),
+        EngineStatus(state = EngineState.MODEL_MISSING, modelId = preferredBuild.id),
     )
     override val status: StateFlow<EngineStatus> = _status.asStateFlow()
 
@@ -54,47 +58,83 @@ class LiteRtEngine(
     @Volatile
     private var engine: Engine? = null
 
+    @Volatile
+    var activeBuild: ModelBuild? = null
+        private set
+
     override suspend fun prepare(onProgress: (Int, String) -> Unit) {
         lifecycleLock.withLock {
             if (engine != null) return
 
-            if (!store.isInstalled(selectedBuild)) {
-                _status.value = _status.value.copy(
-                    state = EngineState.DOWNLOADING,
-                    detail = "Downloading ${selectedBuild.displayName}",
-                )
-                store.ensureAvailable(selectedBuild) { progress ->
-                    _status.value = _status.value.copy(downloadPercent = progress.percent)
-                    onProgress(progress.percent, STAGE_DOWNLOADING)
+            val candidates = ModelCatalog.fallbacksFor(preferredBuild)
+            val failures = mutableListOf<String>()
+
+            for ((index, build) in candidates.withIndex()) {
+                try {
+                    startWith(build, onProgress)
+                    return
+                } catch (error: Throwable) {
+                    Log.w(TAG, "Could not start ${build.id}", error)
+                    failures += "${build.displayName}: ${error.message.orEmpty().lines().first()}"
+                    closeQuietly()
+                    // A build that cannot run on this device is dead weight; the file is
+                    // gigabytes and keeping it invites a retry that will fail identically.
+                    if (index < candidates.lastIndex) store.delete(build)
                 }
             }
 
-            _status.value = _status.value.copy(
-                state = EngineState.INITIALISING,
-                downloadPercent = 100,
-                detail = "Loading the model",
-            )
-            onProgress(-1, STAGE_INITIALISING)
-
-            val created = withContext(Dispatchers.IO) {
-                val config = EngineConfig(
-                    modelPath = store.fileFor(selectedBuild).absolutePath,
-                    backend = selectedBuild.toBackend(context),
-                    cacheDir = context.cacheDir.path,
-                )
-                Engine(config).apply { initialize() }
-            }
-            engine = created
-
             _status.value = EngineStatus(
-                state = EngineState.READY,
-                modelId = selectedBuild.id,
-                backend = selectedBuild.backend.name,
-                downloadPercent = 100,
-                detail = "Ready",
+                state = EngineState.UNSUPPORTED,
+                modelId = preferredBuild.id,
+                detail = "No model could be started. ${failures.joinToString("; ")}",
             )
-            onProgress(100, STAGE_READY)
+            error("No usable model backend on this device. ${failures.joinToString("; ")}")
         }
+    }
+
+    private suspend fun startWith(build: ModelBuild, onProgress: (Int, String) -> Unit) {
+        if (!store.isInstalled(build)) {
+            _status.value = EngineStatus(
+                state = EngineState.DOWNLOADING,
+                modelId = build.id,
+                detail = "Downloading ${build.displayName}",
+            )
+            store.ensureAvailable(build) { progress ->
+                _status.value = _status.value.copy(downloadPercent = progress.percent)
+                onProgress(progress.percent, STAGE_DOWNLOADING)
+            }
+        }
+
+        _status.value = EngineStatus(
+            state = EngineState.INITIALISING,
+            modelId = build.id,
+            downloadPercent = 100,
+            detail = "Loading ${build.displayName}",
+        )
+        onProgress(-1, STAGE_INITIALISING)
+
+        val created = withContext(Dispatchers.IO) {
+            val config = EngineConfig(
+                modelPath = store.fileFor(build).absolutePath,
+                backend = build.toBackend(context),
+                cacheDir = context.cacheDir.path,
+            )
+            Engine(config).apply { initialize() }
+        }
+
+        engine = created
+        activeBuild = build
+        // Reclaim any earlier build now that this one is proven to start.
+        val reclaimed = store.pruneExcept(build)
+        if (reclaimed > 0) Log.i(TAG, "Reclaimed ${reclaimed / 1_000_000} MB of unused model files")
+        _status.value = EngineStatus(
+            state = EngineState.READY,
+            modelId = build.id,
+            backend = build.backend.name,
+            downloadPercent = 100,
+            detail = "Ready",
+        )
+        onProgress(100, STAGE_READY)
     }
 
     override fun generate(request: InsightRequest): Flow<String> = flow {
@@ -119,10 +159,14 @@ class LiteRtEngine(
     }.flowOn(Dispatchers.IO)
 
     override fun close() {
-        runCatching { engine?.close() }
-            .onFailure { Log.w(TAG, "Engine close failed", it) }
-        engine = null
+        closeQuietly()
         _status.value = _status.value.copy(state = EngineState.MODEL_MISSING, detail = "Closed")
+    }
+
+    private fun closeQuietly() {
+        runCatching { engine?.close() }.onFailure { Log.w(TAG, "Engine close failed", it) }
+        engine = null
+        activeBuild = null
     }
 
     private fun ModelBuild.toBackend(context: Context): Backend = when (backend) {
@@ -144,5 +188,19 @@ class LiteRtEngine(
         fun boardPlatform(): String? = runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) Build.SOC_MODEL else null
         }.getOrNull()
+
+        /**
+         * True when vendor NPU dispatch libraries are bundled in this APK.
+         *
+         * They are not part of litertlm-android. Obtaining them means downloading the
+         * QAIRT SDK and building the dispatch shim with Bazel, so unless that has been
+         * done deliberately this returns false and the GPU build is used instead.
+         */
+        fun hasNpuDispatchLibraries(context: Context): Boolean = runCatching {
+            File(context.applicationInfo.nativeLibraryDir)
+                .list()
+                .orEmpty()
+                .any { it.startsWith("libQnnHtp") || it.startsWith("libLiteRtDispatch") }
+        }.getOrDefault(false)
     }
 }
