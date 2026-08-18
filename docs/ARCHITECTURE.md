@@ -1,0 +1,79 @@
+# Architecture
+
+## Processes
+
+```
+┌─ Poop Schedule ────────┐        ┌─ LocalLLM ─────────────────────────┐
+│ Room (local records)   │        │ InferenceService (AIDL, exported,  │
+│ EntryAnalytics         │        │   signature permission)            │
+│   .summarize()         │        │ LocalLlmApplication                │
+│        ↓               │ bind   │   holds LlmEngine for process life │
+│ FactMapper (pure)      │───────▶│ LiteRtEngine → LiteRT-LM 0.16.1    │
+│ LocalLlmClient         │◀───────│ ModelStore (download + SHA-256)    │
+│ Insight card (Compose) │ tokens │ files/models/*.litertlm  (~2 GB)   │
+└────────────────────────┘        └────────────────────────────────────┘
+        Cannsheet Mobile ─── same client tree, same service
+```
+
+Three separate processes. LocalLLM holds the model; the trackers hold the data. Neither
+tracker gains an inference dependency, and the 2 GB model exists once on the device.
+
+## Why a bound service
+
+| Option | Verdict |
+| --- | --- |
+| **AIDL bound service** | Chosen. Typed, streamable via a `oneway` callback, gated by a signature permission, and the client can be told when the service dies. |
+| ContentProvider | `call()` is request/response only. Streaming a generation through it means polling. |
+| Broadcasts / intents | No stream, no back-pressure, awkward correlation of request to reply. |
+| localhost HTTP server | Any app on the phone can reach a localhost socket. It would need its own auth, and a resident socket is worse for battery. |
+| `sharedUserId` | Deprecated, and it fuses the apps' storage and identity — far more coupling than this needs. |
+
+## Security model
+
+Access is controlled by one custom permission declared with
+`android:protectionLevel="signature"`. Android grants it only to apps signed with the
+same certificate as LocalLLM. All three apps ship from the one personal keystore, so the
+check costs nothing and no third-party app can reach the model or the data sent to it.
+
+Two consequences worth remembering:
+
+1. **Install order matters.** A signature permission is granted only if the app that
+   *defines* it is already installed. Install or update LocalLLM before the clients.
+2. **Package visibility.** From Android 11, a client cannot even see the service unless
+   it declares `<queries><package android:name="com.noamv.localllm" /></queries>`.
+   Without it `bindService` returns `false` and nothing else explains why.
+
+## Lifecycle and memory
+
+`Engine.initialize()` takes several seconds and the loaded model occupies a large,
+contiguous allocation. Two decisions follow:
+
+- The engine lives on `LocalLlmApplication`, not on the service, so it survives unbind
+  and rebind. Otherwise every app switch would pay a reload.
+- `onTrimMemory(TRIM_MEMORY_RUNNING_CRITICAL)` closes the engine deliberately. Paying a
+  reload is better than having the process killed mid-generation.
+
+A fresh `Conversation` is created per request. Conversations are cheap and this keeps
+state from leaking between the two client apps.
+
+## Foreground service
+
+Generation is promoted to the foreground for its duration using
+`foregroundServiceType="specialUse"`. The alternatives were worse: `dataSync` is capped
+at roughly six hours a day on Android 15, and `shortService` caps a single run at three
+minutes with no extension. Without foreground promotion, a generation started by a
+backgrounded client is liable to be killed and the client just sees the stream stop.
+
+## Model selection
+
+`ModelCatalog.defaultFor(board)` inspects `Build.SOC_MODEL`. A chipset-specific NPU build
+is preferred when it matches, because it is both faster and easier on the battery than
+the GPU path; otherwise the portable GPU build is used. Every build is pinned to a
+SHA-256 taken from the HuggingFace LFS metadata and verified after download.
+
+## What is deliberately absent
+
+- No chat UI. LocalLLM is infrastructure; its screen manages the model.
+- No analytics computation. Clients compute their own statistics.
+- No network use beyond the model download.
+- No storage of prompts or generated text. Nothing is persisted between requests.

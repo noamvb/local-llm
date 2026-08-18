@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The downloaded model is multiple gigabytes of redownloadable data and must never be
+  backed up. allowBackup is false at the application level as well; this file documents
+  the intent and protects against that being flipped on later.
+-->
+<full-backup-content>
+    <exclude domain="file" path="models/" />
+    <exclude domain="external" path="models/" />
+</full-backup-content>

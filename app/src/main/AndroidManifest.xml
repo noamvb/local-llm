@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Downloading the model file. No other network use exists in this app. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Download and inference progress notifications. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <!--
+      Only apps signed with the SAME certificate as this app may bind the inference
+      service. Cannsheet Mobile, Poop Schedule and LocalLLM all ship from the one
+      personal keystore, so signature protection costs nothing and means no other
+      installed app can reach the model or the data being sent to it.
+
+      Known ordering hazard: a signature permission is only granted if the app that
+      DEFINES it is installed first. Install or update LocalLLM before the clients.
+    -->
+    <permission
+        android:name="com.noamv.localllm.permission.INFERENCE"
+        android:label="@string/permission_inference_label"
+        android:description="@string/permission_inference_description"
+        android:protectionLevel="signature" />
+
+    <uses-permission android:name="com.noamv.localllm.permission.INFERENCE" />
+
+    <application
+        android:name=".LocalLlmApplication"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.LocalLLM"
+        tools:targetApi="36">
+
+        <!--
+          Required by the LiteRT-LM GPU backend. Marked not-required so the app still
+          installs and falls back to CPU on devices lacking an OpenCL driver.
+        -->
+        <uses-native-library android:name="libOpenCL.so" android:required="false" />
+        <uses-native-library android:name="libvndksupport.so" android:required="false" />
+
+        <activity
+            android:name=".ui.MainActivity"
+            android:exported="true"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          The cross-app inference service.
+
+          foregroundServiceType=specialUse is the honest classification: this is local
+          computation, not a data sync. dataSync would be a poor fit because Android 15
+          caps it at roughly six hours per day, and shortService caps a run at three
+          minutes with no extension.
+        -->
+        <service
+            android:name=".service.InferenceService"
+            android:exported="true"
+            android:foregroundServiceType="specialUse"
+            android:permission="com.noamv.localllm.permission.INFERENCE">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="On-device language model inference for the owner's own apps" />
+            <intent-filter>
+                <action android:name="com.noamv.localllm.action.BIND_INFERENCE" />
+            </intent-filter>
+        </service>
+
+    </application>
+</manifest>
