@@ -26,8 +26,8 @@ android {
     // knownSigner permission flag used to gate the inference service requires API 31.
     minSdk = 31
     targetSdk = 36
-    versionCode = 4
-    versionName = "0.1.3"
+    versionCode = 5
+    versionName = "0.1.4"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
