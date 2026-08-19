@@ -2,6 +2,8 @@ package com.noamv.localllm.ui
 
 import com.noamv.localllm.contract.EngineState
 import com.noamv.localllm.contract.EngineStatus
+import com.noamv.localllm.engine.EngineTimings
+import java.util.Locale
 
 /**
  * Turns the wire-level [EngineStatus] into text a human can read without decoding an
@@ -69,3 +71,23 @@ internal fun prepareButtonLabel(status: EngineStatus): String = when {
     status.modelDownloaded -> "Load model"
     else -> "Download and load model"
 }
+
+/** The duration and backend of the most recent model load. */
+internal fun lastLoadText(timings: EngineTimings): String =
+    timings.lastInitMillis?.let { millis ->
+        String.format(
+            Locale.ROOT,
+            "%.1f s on %s",
+            millis / 1000.0,
+            timings.lastInitBackend ?: "unknown",
+        )
+    } ?: "not loaded yet"
+
+/** Time-to-first-token and warm/cold status of the most recent generation. */
+internal fun lastResponseText(timings: EngineTimings): String =
+    timings.lastTimeToFirstTokenMillis?.let { millis ->
+        val formattedSeconds = String.format(Locale.ROOT, "%.1f s", millis / 1000.0)
+        val mode = if (timings.lastRequestWasWarm == true) "already loaded" else "cold start"
+        "first word after $formattedSeconds ($mode)"
+    } ?: "no request yet"
+

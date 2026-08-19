@@ -13,6 +13,9 @@ interface LlmEngine : AutoCloseable {
 
     val status: StateFlow<EngineStatus>
 
+    /** Diagnostics for the manager screen. Not part of the cross-app contract. */
+    val timings: StateFlow<EngineTimings>
+
     /**
      * Ensures the model is downloaded and the engine initialised. Safe to call
      * repeatedly; concurrent callers await the same work.

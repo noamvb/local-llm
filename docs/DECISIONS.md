@@ -2,6 +2,22 @@
 
 Durable choices and the evidence behind them. Newest first.
 
+## 2026-08-19 — Prewarm the engine on bind, and measure where the time goes
+
+**Decision.** `InferenceService` initiates non-downloading model prewarming (`LocalLlmApplication.prewarmModel`) on `onBind` and `onRebind`, and `onUnbind` returns `true`. Model load duration and time-to-first-token (TTFT) metrics are measured in `LiteRtEngine` and surfaced on the manager screen and in logcat. `LocalLlmClient` gains an idempotent `warmup(): AutoCloseable` handle.
+
+**Why.** Initialising the 2 GB model via LiteRT-LM takes multiple seconds (measured around four seconds on a Galaxy Z Fold 7). Because `InferenceService.requestInsight` previously prepared the engine inline upon request arrival, users waited for the entire initialization cost on every insight generation. Moreover, client apps checked `engineStatus()` and immediately unbound before issuing `generate()`, leaving a zero-binding window where Android could reclaim the process.
+
+Prewarming on bind starts model initialization the moment a client connects to check status or render the screen, overlapping initialization with the user reading the UI.
+
+**Consequences.**
+- Prewarm is strictly conditioned on `status.modelDownloaded == true` and `state == EngineState.MODEL_MISSING` (`PrewarmPolicy.shouldPrewarmOnBind`). A service bind never triggers a network download.
+- AIDL interfaces and cross-app contracts remain byte-identical; diagnostic timings are app-internal (`EngineTimings`).
+- Logcat records duration and token count telemetry only; prompt and generated text are never logged.
+- The manager screen displays the most recent model load duration/backend and generation time-to-first-token (distinguishing warm from cold starts).
+
+**The general lesson.** An expensive resource cached "for the process lifetime" is not cached at all when the process does not survive; the fix is to start the work earlier, not to hold it longer.
+
 ## 2026-08-18 — An interrupted preparation never discards the model
 
 **Decision.** `LiteRtEngine.prepare()` rethrows `CancellationException` instead of treating

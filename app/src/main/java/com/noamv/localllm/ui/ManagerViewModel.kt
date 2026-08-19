@@ -13,6 +13,7 @@ import com.noamv.localllm.contract.Fact
 import com.noamv.localllm.contract.InsightRequest
 import com.noamv.localllm.contract.InsightTask
 import com.noamv.localllm.contract.Period
+import com.noamv.localllm.engine.EngineTimings
 import com.noamv.localllm.engine.LiteRtEngine
 import com.noamv.localllm.engine.LlmEngine
 import com.noamv.localllm.model.ModelBuild
@@ -29,6 +30,7 @@ class ManagerViewModel(
 ) : ViewModel() {
 
     val status: StateFlow<EngineStatus> = engine.status
+    val timings: StateFlow<EngineTimings> = engine.timings
 
     private val _selfTest = MutableStateFlow<String?>(null)
     val selfTest: StateFlow<String?> = _selfTest.asStateFlow()
