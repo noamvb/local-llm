@@ -69,7 +69,8 @@ private fun ManagerScreen(viewModel: ManagerViewModel) {
         Text("Model: ${viewModel.modelName}", style = MaterialTheme.typography.titleMedium)
         Text("Download size: ${"%.2f".format(viewModel.modelSizeGb)} GB")
         Text("Chipset: ${viewModel.chipset ?: "unknown"}")
-        Text("State: ${status.state} ${status.detail}".trim())
+        Text("Model file: ${modelFileText(status)}")
+        Text("Status: ${engineStatusText(status)}")
 
         if (status.state == EngineState.DOWNLOADING && status.downloadPercent >= 0) {
             LinearProgressIndicator(
@@ -83,7 +84,7 @@ private fun ManagerScreen(viewModel: ManagerViewModel) {
             onClick = viewModel::prepare,
             enabled = status.state != EngineState.DOWNLOADING,
         ) {
-            Text(if (status.state == EngineState.READY) "Reload model" else "Download and load model")
+            Text(prepareButtonLabel(status))
         }
 
         Button(onClick = viewModel::runSelfTest, enabled = status.state == EngineState.READY) {
