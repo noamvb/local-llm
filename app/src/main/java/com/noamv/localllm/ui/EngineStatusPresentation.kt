@@ -87,7 +87,20 @@ internal fun lastLoadText(timings: EngineTimings): String =
 internal fun lastResponseText(timings: EngineTimings): String =
     timings.lastTimeToFirstTokenMillis?.let { millis ->
         val formattedSeconds = String.format(Locale.ROOT, "%.1f s", millis / 1000.0)
-        val mode = if (timings.lastRequestWasWarm == true) "already loaded" else "cold start"
-        "first word after $formattedSeconds ($mode)"
+        val mode = when (timings.lastRequestWasWarm) {
+            true -> "already loaded"
+            false -> "cold start"
+            null -> null
+        }
+        val note = when {
+            mode != null && timings.lastRequestDownloaded -> "$mode, including download"
+            mode != null -> mode
+            timings.lastRequestDownloaded -> "including download"
+            else -> null
+        }
+        if (note != null) {
+            "first word after $formattedSeconds ($note)"
+        } else {
+            "first word after $formattedSeconds"
+        }
     } ?: "no request yet"
-

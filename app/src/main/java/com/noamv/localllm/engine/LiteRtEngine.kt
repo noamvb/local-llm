@@ -173,7 +173,9 @@ class LiteRtEngine(
     override fun generate(request: InsightRequest): Flow<String> = flow {
         val startedAt = SystemClock.elapsedRealtime()
         val warm = engine != null
+        val downloaded = _status.value.modelDownloaded || store.isInstalled(preferredBuild)
         prepare()
+        val postPrepareAt = SystemClock.elapsedRealtime()
         val active = engine ?: error("Engine is not initialised")
 
         generationLock.withLock {
@@ -194,13 +196,19 @@ class LiteRtEngine(
                             if (first) {
                                 first = false
                                 val elapsed = SystemClock.elapsedRealtime() - startedAt
+                                val prefill = SystemClock.elapsedRealtime() - postPrepareAt
                                 _timings.update { timings ->
                                     timings.copy(
                                         lastTimeToFirstTokenMillis = elapsed,
+                                        lastPrefillMillis = prefill,
                                         lastRequestWasWarm = warm,
+                                        lastRequestDownloaded = !downloaded,
                                     )
                                 }
-                                Log.i(TAG, "ttft warm=$warm ms=$elapsed")
+                                Log.i(
+                                    TAG,
+                                    "ttft warm=$warm downloaded=${!downloaded} totalMs=$elapsed prefillMs=$prefill",
+                                )
                             }
                             fragmentCount++
                         }

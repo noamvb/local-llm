@@ -138,4 +138,34 @@ class EngineStatusPresentationTest {
         val warm = EngineTimings(lastTimeToFirstTokenMillis = 1230, lastRequestWasWarm = true)
         assertEquals("first word after 1.2 s (already loaded)", lastResponseText(warm))
     }
+
+    @Test
+    fun `lastResponseText omits parenthetical when warm status is null`() {
+        val unknown = EngineTimings(lastTimeToFirstTokenMillis = 2500, lastRequestWasWarm = null)
+        assertEquals("first word after 2.5 s", lastResponseText(unknown))
+    }
+
+    @Test
+    fun `lastResponseText includes download note when lastRequestDownloaded is true`() {
+        val withDownload = EngineTimings(
+            lastTimeToFirstTokenMillis = 340100,
+            lastRequestWasWarm = false,
+            lastRequestDownloaded = true,
+        )
+        assertEquals("first word after 340.1 s (cold start, including download)", lastResponseText(withDownload))
+
+        val warmWithDownload = EngineTimings(
+            lastTimeToFirstTokenMillis = 1200,
+            lastRequestWasWarm = true,
+            lastRequestDownloaded = true,
+        )
+        assertEquals("first word after 1.2 s (already loaded, including download)", lastResponseText(warmWithDownload))
+
+        val unknownWithDownload = EngineTimings(
+            lastTimeToFirstTokenMillis = 2500,
+            lastRequestWasWarm = null,
+            lastRequestDownloaded = true,
+        )
+        assertEquals("first word after 2.5 s (including download)", lastResponseText(unknownWithDownload))
+    }
 }

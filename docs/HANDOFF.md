@@ -8,8 +8,8 @@ diagnostic timing telemetry, and manager screen load/TTFT displays.
 | Repository | Released | State |
 | --- | --- | --- |
 | `noamvb/local-llm` | **v0.1.4** | Public. Releases publish in-repo. |
-| `noamvb/poop-schedule` | **v1.2.2** | Private, releases to `poop-schedule-releases`. Insight card, nudge, loading indicator, and scroll fix shipped. |
-| `noamvb/cannsheet-mobile` | **v1.4.2** | Public, releases to `cannsheet-mobile-releases`. Insight summary, loading indicator, and scroll fix shipped. |
+| `noamvb/poop-schedule` | **v1.2.3** | Private, releases to `poop-schedule-releases`. Insight card, nudge, loading indicator, scroll fix, and warmup binding shipped. |
+| `noamvb/cannsheet-mobile` | **v1.4.3** | Public, releases to `cannsheet-mobile-releases`. Insight summary, loading indicator, scroll fix, and warmup binding shipped. |
 
 All three publications were verified by downloading the asset and checking it, not by
 trusting the pipeline:
@@ -17,7 +17,9 @@ trusting the pipeline:
 | App | versionCode | Signer SHA-256 | Continuity |
 | --- | --- | --- | --- |
 | Poop Schedule 1.2.2 | 21 | `98198cd1…a55cde` | identical to 1.1.0/1.2.0/1.2.1 |
+| Poop Schedule 1.2.3 | 22 | `98198cd1…a55cde` | identical to 1.2.2 |
 | Cannsheet Mobile 1.4.2 | 38 | `a9787249…08665e` | identical to 1.3.4/1.4.0/1.4.1 |
+| Cannsheet Mobile 1.4.3 | 39 | `a9787249…08665e` | identical to 1.4.2 |
 | LocalLLM 0.1.2 | 3 | `f1f2632b…d3b95d` | identical to 0.1.1 |
 | LocalLLM 0.1.3 | 4 | `f1f2632b…d3b95d` | identical to 0.1.2 |
 | LocalLLM 0.1.4 | 5 | `f1f2632b…d3b95d` | identical to 0.1.3 |
