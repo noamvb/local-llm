@@ -57,9 +57,10 @@ class InferenceService : Service() {
         return binder
     }
 
-    // Returning true means Android calls onRebind (rather than a fresh onBind) when a client
-    // binds again to a service instance that is still alive. Without this, prewarm would be
-    // skipped on that path.
+    // Returning true tells Android to call onRebind if a client binds to an already-running
+    // instance. In a bind-only configuration this service is destroyed when the last client
+    // unbinds so onRebind is not expected to fire today, but the override is kept as defense
+    // against any future started-service lifecycle.
     override fun onUnbind(intent: Intent?): Boolean = true
 
     override fun onRebind(intent: Intent?) {

@@ -68,9 +68,13 @@ class LocalLlmClient(private val context: Context) {
             context.bindService(serviceIntent(), connection, Context.BIND_AUTO_CREATE)
         }.getOrDefault(false)
 
-        val isClosed = AtomicBoolean(!bound)
+        val isClosed = AtomicBoolean(false)
         return AutoCloseable {
             if (isClosed.compareAndSet(false, true)) {
+                // Always unbind: bindService registers the connection even when it returns false,
+                // and skipping it leaks that registration. unbindService throws
+                // IllegalArgumentException for a connection that was never registered — which is
+                // why this stays wrapped.
                 runCatching { context.unbindService(connection) }
             }
         }

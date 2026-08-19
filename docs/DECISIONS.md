@@ -2,6 +2,17 @@
 
 Durable choices and the evidence behind them. Newest first.
 
+## 2026-08-19 — Split time-to-first-token telemetry and track download status
+
+**Decision.** `EngineTimings` records both total time-to-first-token (`lastTimeToFirstTokenMillis`) and the post-preparation prefill segment (`lastPrefillMillis`), alongside a flag indicating whether the request triggered a model download (`lastRequestDownloaded`). Logcat and the manager screen distinguish pure prefill latency from download and model initialisation overhead.
+
+**Why.** The initial TTFT telemetry measured the single composite span from request arrival to the first emitted token fragment (`now - startedAt`). For a cold start requiring a model download, this produced samples exceeding 300 seconds labeled simply as "(cold start)", masking the difference between network transfer, GPU initialization, queue waiting, and token prefill. Splitting the post-preparation segment and explicitly flagging downloads ensures that latency telemetry directly informs backend performance and NPU evaluation without being distorted by multi-gigabyte transfers.
+
+**Consequences.**
+- `LiteRtEngine.generate` samples download state prior to `prepare()`, timestamps post-preparation completion, and logs `ttft warm=... downloaded=... totalMs=... prefillMs=...`.
+- `EngineStatusPresentation.lastResponseText` formats download-inclusive requests as `"(cold start, including download)"` (or `"(including download)"`) rather than misrepresenting network transfers as pure inference latency.
+- Internal telemetry structures (`EngineTimings`) remain app-internal and do not alter AIDL contracts.
+
 ## 2026-08-19 — Prewarm the engine on bind, and measure where the time goes
 
 **Decision.** `InferenceService` initiates non-downloading model prewarming (`LocalLlmApplication.prewarmModel`) on `onBind` and `onRebind`, and `onUnbind` returns `true`. Model load duration and time-to-first-token (TTFT) metrics are measured in `LiteRtEngine` and surfaced on the manager screen and in logcat. `LocalLlmClient` gains an idempotent `warmup(): AutoCloseable` handle.
