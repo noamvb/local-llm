@@ -7,7 +7,7 @@ diagnostic timing telemetry, and manager screen load/TTFT displays.
 
 | Repository | Released | State |
 | --- | --- | --- |
-| `noamvb/local-llm` | **v0.1.4** | Public. Releases publish in-repo. |
+| `noamvb/local-llm` | **v0.1.5** | Public. Releases publish in-repo. |
 | `noamvb/poop-schedule` | **v1.2.3** | Private, releases to `poop-schedule-releases`. Insight card, nudge, loading indicator, scroll fix, and warmup binding shipped. |
 | `noamvb/cannsheet-mobile` | **v1.4.3** | Public, releases to `cannsheet-mobile-releases`. Insight summary, loading indicator, scroll fix, and warmup binding shipped. |
 
@@ -23,6 +23,7 @@ trusting the pipeline:
 | LocalLLM 0.1.2 | 3 | `f1f2632b…d3b95d` | identical to 0.1.1 |
 | LocalLLM 0.1.3 | 4 | `f1f2632b…d3b95d` | identical to 0.1.2 |
 | LocalLLM 0.1.4 | 5 | `f1f2632b…d3b95d` | identical to 0.1.3 |
+| LocalLLM 0.1.5 | 6 | `f1f2632b…d3b95d` | identical to 0.1.4 |
 
 Both digests are the ones `local-llm`'s `app/src/main/res/values/known_signers.xml` grants
 inference permission to, so a clean install binds. Obtainium updates both in place.
