@@ -1,13 +1,14 @@
 # Handoff
 
-Last updated: 2026-08-18. Updated after LocalLLM 0.1.2 shipped; the previous version
-listed 0.1.1 as current and described the insight cards as working, which they were not.
+Last updated: 2026-08-18. Updated after 0.1.2 was confirmed working on the Fold and 0.1.3
+was cut. The 0.1.2 fix held: the model survived closing the app, and both insight cards
+rendered on a device for the first time.
 
 ## Where everything stands
 
 | Repository | Released | State |
 | --- | --- | --- |
-| `noamvb/local-llm` | **v0.1.2** | Public. Releases publish in-repo. No open PRs. |
+| `noamvb/local-llm` | **v0.1.3** | Public. Releases publish in-repo. |
 | `noamvb/poop-schedule` | **v1.2.0** | Private, releases to `poop-schedule-releases`. No open PRs. Insight card **and** nudge shipped. |
 | `noamvb/cannsheet-mobile` | **v1.4.0** | Public, releases to `cannsheet-mobile-releases`. Open: **#96** (clean, v1.4.0 provenance) and **#89** (stale since 15 Aug, `mergeStateStatus` UNKNOWN). |
 
@@ -19,6 +20,7 @@ trusting the pipeline:
 | Poop Schedule 1.2.0 | 19 | `98198cd1…a55cde` | identical to 1.1.0 |
 | Cannsheet Mobile 1.4.0 | — | `a9787249…08665e` | identical to 1.3.4 |
 | LocalLLM 0.1.2 | 3 | `f1f2632b…d3b95d` | identical to 0.1.1 |
+| LocalLLM 0.1.3 | 4 | `f1f2632b…d3b95d` | identical to 0.1.2 |
 
 Both digests are the ones `local-llm`'s `app/src/main/res/values/known_signers.xml` grants
 inference permission to, so a clean install binds. Obtainium updates both in place.
@@ -33,6 +35,13 @@ Verified on the Galaxy Z Fold 7 (`SM8750`, Android 16):
 - `INFERENCE: granted=true` across two *different* signing certificates, which is the
   whole point of the `knownSigner` permission.
 - Graceful degradation with no model present: the card renders nothing rather than an error.
+- **0.1.2 holds (2026-08-18).** The model survived closing the app and switching away:
+  storage stayed at 2.08 GB, and the manager screen went MODEL_MISSING → INITIALISING →
+  READY in about four seconds with no download.
+- **Both insight cards render on a device**, each within about eight seconds of opening
+  Insights from a cold LocalLLM process. Poop Schedule's figures match its own statistics
+  exactly (35 entries / 8.2 per week / 20 h 19 min / 11 min). **This was Cannsheet's first
+  observed render on hardware** — ADR-025 should be updated accordingly.
 
 **Regression found and fixed on 2026-08-18 (0.1.2).** The insight cards stopped appearing
 in *both* clients, and the model appeared to need re-downloading after every close. One
@@ -42,6 +51,16 @@ app cancelled it and triggered the delete. Because both clients gate on
 `EngineStatus.modelDownloaded`, a deleted model makes the card render nothing — silently, by
 design. Measured on the Fold: 2.08 GB before the Insights path ran, 70.14 MB after, with no
 `.part` surviving. Fixed in #4; see `docs/DECISIONS.md`.
+
+**The 0.1.3 UI fix, and why it was needed (2026-08-18).** With 0.1.2 working, the owner
+still reported the model "disappearing" after switching apps. It had not. `MODEL_MISSING`
+means "no engine is loaded", not "no model file", and Android kills this process whenever it
+is backgrounded — so that state is what you see on every return, over a fully verified model.
+The button compounded it by offering to *download* in every state but READY. The screen now
+states the file's presence on its own line and labels the button "Load model" when nothing
+needs fetching. Note also that `engineStatusText` used to concatenate the state and
+`detail` unconditionally, which rendered "Ready Ready" and "Loading Loading Gemma 4 E2B
+(GPU)" — both observed on the device.
 
 **Not verified, and do not claim otherwise:**
 
@@ -53,18 +72,16 @@ design. Measured on the Fold: 2.08 GB before the Insights path ran, 70.14 MB aft
    screen with a neutral public version for casting/DeX. Nobody has looked at a locked
    screen to check which one appears. This needs the owner's eyes; it cannot be seen over
    `adb`.
-3. **Cannsheet's insight card has never rendered on a device.** It is green in CI only.
-4. **The 0.1.2 fix is not confirmed on a device.** `ModelStoreTest` covers the resume
-   contract, but the `LiteRtEngine` change is compile-verified only — testing it needs a
-   `Context` and a fake litertlm `Engine`. Nobody has yet interrupted a real download and
-   watched it resume from its `.part`.
+3. **An interrupted download has never been resumed on a device.** `ModelStoreTest`
+   covers the resume contract and the model now survives closing the app, but nobody has
+   killed a transfer part-way and watched it pick up from its `.part`.
+4. **The loading indicators are not confirmed on a device.** Both client cards gained one
+   after the 0.1.2 verification below; only their unit tests and CI have run.
 
 ## Do this first
 
-1. **Install 0.1.2, re-download the model, and confirm both cards come back.** The model
-   was deleted by the bug above, so one more full download is unavoidable; the point is
-   that it should be the last. Interrupt it once part-way to check it resumes rather than
-   restarting.
+1. Ship the two client loading indicators — `poop-schedule#76` and `cannsheet-mobile#97`
+   — which need their own version bumps and releases to reach the phone.
 2. Decide on Cannsheet **#96** (clean) and **#89** (stale, created 15 Aug, merge state
    UNKNOWN — likely needs its branch updated or closing).
 3. Watch for the first real nudge and check the lock screen. That closes items 1 and 2 above.
