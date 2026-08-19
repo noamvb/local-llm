@@ -2,6 +2,7 @@ package com.noamv.localllm.engine
 
 import android.content.Context
 import android.os.Build
+import android.os.SystemClock
 import android.util.Log
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.ConversationConfig
@@ -26,6 +27,9 @@ import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onCompletion
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -56,6 +60,9 @@ class LiteRtEngine(
         ),
     )
     override val status: StateFlow<EngineStatus> = _status.asStateFlow()
+
+    private val _timings = MutableStateFlow(EngineTimings())
+    override val timings: StateFlow<EngineTimings> = _timings.asStateFlow()
 
     private val lifecycleLock = Mutex()
     private val generationLock = Mutex()
@@ -132,6 +139,7 @@ class LiteRtEngine(
         )
         onProgress(-1, STAGE_INITIALISING)
 
+        val startInit = SystemClock.elapsedRealtime()
         val created = withContext(Dispatchers.IO) {
             val config = EngineConfig(
                 modelPath = store.fileFor(build).absolutePath,
@@ -140,6 +148,11 @@ class LiteRtEngine(
             )
             Engine(config).apply { initialize() }
         }
+        val elapsedInit = SystemClock.elapsedRealtime() - startInit
+        _timings.update {
+            it.copy(lastInitMillis = elapsedInit, lastInitBackend = build.backend.name)
+        }
+        Log.i(TAG, "init build=${build.id} backend=${build.backend} tookMs=$elapsedInit")
 
         engine = created
         activeBuild = build
@@ -158,6 +171,8 @@ class LiteRtEngine(
     }
 
     override fun generate(request: InsightRequest): Flow<String> = flow {
+        val startedAt = SystemClock.elapsedRealtime()
+        val warm = engine != null
         prepare()
         val active = engine ?: error("Engine is not initialised")
 
@@ -169,10 +184,30 @@ class LiteRtEngine(
                 samplerConfig = SamplerConfig(topK = 20, topP = 0.9, temperature = 0.25),
             )
             active.createConversation(config).use { conversation ->
+                var first = true
+                var fragmentCount = 0
                 emitAll(
                     conversation
                         .sendMessageAsync(PromptBuilder.userMessage(request))
-                        .map { it.toString() },
+                        .map { it.toString() }
+                        .onEach {
+                            if (first) {
+                                first = false
+                                val elapsed = SystemClock.elapsedRealtime() - startedAt
+                                _timings.update { timings ->
+                                    timings.copy(
+                                        lastTimeToFirstTokenMillis = elapsed,
+                                        lastRequestWasWarm = warm,
+                                    )
+                                }
+                                Log.i(TAG, "ttft warm=$warm ms=$elapsed")
+                            }
+                            fragmentCount++
+                        }
+                        .onCompletion {
+                            val totalDuration = SystemClock.elapsedRealtime() - startedAt
+                            Log.i(TAG, "generate completed: fragments=$fragmentCount totalMs=$totalDuration")
+                        },
                 )
             }
         }

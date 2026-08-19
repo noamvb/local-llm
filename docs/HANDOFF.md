@@ -78,6 +78,9 @@ needs fetching. Note also that `engineStatusText` used to concatenate the state 
 4. **The loading indicators and scroll fixes are not confirmed on a device.** Both client
    cards gained loading indicators and scroll regeneration fixes; only their unit tests and
    CI have run.
+5. **On-device prewarm timing numbers are pending.** Prewarming on bind, TTFT telemetry,
+   and load timing displays have been unit-test and compilation verified; on-device load and
+   TTFT measurements on the Galaxy Z Fold 7 are left for the owner.
 
 ## Do this first
 

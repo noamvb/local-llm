@@ -16,6 +16,7 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -46,6 +47,34 @@ class LocalLlmClient(private val context: Context) {
     /** True when the LocalLLM app is installed and visible to this app. */
     fun isInstalled(): Boolean =
         context.packageManager.resolveService(serviceIntent(), 0) != null
+
+    /**
+     * Holds the service binding open so a model loaded during the status check is still
+     * loaded when generate() runs moments later.
+     *
+     * Without this the client binds twice — once for engineStatus(), once for generate() —
+     * and LocalLLM has no bindings in the gap, which makes it a prime candidate for being
+     * killed with a freshly loaded 2 GB model still in memory.
+     *
+     * Open it when the screen that may show an insight becomes visible; close it when that
+     * screen goes away. Closing is mandatory: an unclosed handle keeps LocalLLM resident.
+     */
+    fun warmup(): AutoCloseable {
+        val connection = object : ServiceConnection {
+            override fun onServiceConnected(name: ComponentName?, binder: IBinder?) = Unit
+            override fun onServiceDisconnected(name: ComponentName?) = Unit
+        }
+        val bound = runCatching {
+            context.bindService(serviceIntent(), connection, Context.BIND_AUTO_CREATE)
+        }.getOrDefault(false)
+
+        val isClosed = AtomicBoolean(!bound)
+        return AutoCloseable {
+            if (isClosed.compareAndSet(false, true)) {
+                runCatching { context.unbindService(connection) }
+            }
+        }
+    }
 
     /**
      * Reads engine state without generating anything. Use it to decide whether to show

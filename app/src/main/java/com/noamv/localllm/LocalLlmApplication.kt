@@ -4,6 +4,7 @@ import android.app.Application
 import android.util.Log
 import com.noamv.localllm.engine.LiteRtEngine
 import com.noamv.localllm.engine.LlmEngine
+import com.noamv.localllm.engine.shouldPrewarmOnBind
 import com.noamv.localllm.model.ModelStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -72,6 +73,22 @@ class LocalLlmApplication : Application() {
                 Log.w(TAG, "Model preparation failed", error)
             }
         }.also { prepareJob = it }
+    }
+
+    /**
+     * Loads an already-downloaded model ahead of the first request, so Engine.initialize()
+     * overlaps with the user reading the screen instead of blocking the insight card.
+     *
+     * Deliberately never downloads: this fires on a bind, and a bind must not be able to
+     * start a multi-gigabyte transfer. When no file is present this does nothing and the
+     * ordinary download-on-demand path in requestInsight still applies.
+     */
+    fun prewarmModel() {
+        applicationScope.launch {
+            // Reading engine.status constructs the engine lazily, which touches the disk.
+            // Doing it inside the coroutine keeps that off the binder/main thread.
+            if (shouldPrewarmOnBind(engine.status.value)) prepareModel()
+        }
     }
 
     // The granular TRIM_MEMORY_* levels are deprecated from API 34, but no replacement

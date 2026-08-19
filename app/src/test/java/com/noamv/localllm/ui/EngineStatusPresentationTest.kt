@@ -2,6 +2,7 @@ package com.noamv.localllm.ui
 
 import com.noamv.localllm.contract.EngineState
 import com.noamv.localllm.contract.EngineStatus
+import com.noamv.localllm.engine.EngineTimings
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -114,5 +115,27 @@ class EngineStatusPresentationTest {
                 prepareButtonLabel(status(state, modelDownloaded = true)),
             )
         }
+    }
+
+    @Test
+    fun `timing strings show default empty messages when no timings are recorded`() {
+        val empty = EngineTimings()
+        assertEquals("not loaded yet", lastLoadText(empty))
+        assertEquals("no request yet", lastResponseText(empty))
+    }
+
+    @Test
+    fun `lastLoadText formats recorded load duration and backend in seconds`() {
+        val timings = EngineTimings(lastInitMillis = 4200, lastInitBackend = "GPU")
+        assertEquals("4.2 s on GPU", lastLoadText(timings))
+    }
+
+    @Test
+    fun `lastResponseText formats TTFT and reports cold start or already loaded`() {
+        val cold = EngineTimings(lastTimeToFirstTokenMillis = 5120, lastRequestWasWarm = false)
+        assertEquals("first word after 5.1 s (cold start)", lastResponseText(cold))
+
+        val warm = EngineTimings(lastTimeToFirstTokenMillis = 1230, lastRequestWasWarm = true)
+        assertEquals("first word after 1.2 s (already loaded)", lastResponseText(warm))
     }
 }

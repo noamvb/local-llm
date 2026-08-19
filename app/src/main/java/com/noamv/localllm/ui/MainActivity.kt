@@ -49,6 +49,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun ManagerScreen(viewModel: ManagerViewModel) {
     val status by viewModel.status.collectAsStateWithLifecycle()
+    val timings by viewModel.timings.collectAsStateWithLifecycle()
     val selfTest by viewModel.selfTest.collectAsStateWithLifecycle()
 
     Column(
@@ -71,6 +72,8 @@ private fun ManagerScreen(viewModel: ManagerViewModel) {
         Text("Chipset: ${viewModel.chipset ?: "unknown"}")
         Text("Model file: ${modelFileText(status)}")
         Text("Status: ${engineStatusText(status)}")
+        Text("Last load: ${lastLoadText(timings)}")
+        Text("Last response: ${lastResponseText(timings)}")
 
         if (status.state == EngineState.DOWNLOADING && status.downloadPercent >= 0) {
             LinearProgressIndicator(

@@ -52,7 +52,19 @@ class InferenceService : Service() {
         createNotificationChannel()
     }
 
-    override fun onBind(intent: Intent?): IBinder = binder
+    override fun onBind(intent: Intent?): IBinder {
+        (application as LocalLlmApplication).prewarmModel()
+        return binder
+    }
+
+    // Returning true means Android calls onRebind (rather than a fresh onBind) when a client
+    // binds again to a service instance that is still alive. Without this, prewarm would be
+    // skipped on that path.
+    override fun onUnbind(intent: Intent?): Boolean = true
+
+    override fun onRebind(intent: Intent?) {
+        (application as LocalLlmApplication).prewarmModel()
+    }
 
     override fun onDestroy() {
         scope.cancel()
