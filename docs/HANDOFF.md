@@ -1,24 +1,24 @@
 # Handoff
 
-Last updated: 2026-08-18. Updated after 0.1.2 was confirmed working on the Fold and 0.1.3
-was cut. The 0.1.2 fix held: the model survived closing the app, and both insight cards
-rendered on a device for the first time.
+Last updated: 2026-08-19. Updated after 0.1.3 was shipped and both clients shipped
+their loading indicators (Poop Schedule 1.2.1/1.2.2, Cannsheet Mobile 1.4.1/1.4.2)
+and scroll-regeneration fixes.
 
 ## Where everything stands
 
 | Repository | Released | State |
 | --- | --- | --- |
 | `noamvb/local-llm` | **v0.1.3** | Public. Releases publish in-repo. |
-| `noamvb/poop-schedule` | **v1.2.0** | Private, releases to `poop-schedule-releases`. No open PRs. Insight card **and** nudge shipped. |
-| `noamvb/cannsheet-mobile` | **v1.4.0** | Public, releases to `cannsheet-mobile-releases`. Open: **#96** (clean, v1.4.0 provenance) and **#89** (stale since 15 Aug, `mergeStateStatus` UNKNOWN). |
+| `noamvb/poop-schedule` | **v1.2.2** | Private, releases to `poop-schedule-releases`. Insight card, nudge, loading indicator, and scroll fix shipped. |
+| `noamvb/cannsheet-mobile` | **v1.4.2** | Public, releases to `cannsheet-mobile-releases`. Insight summary, loading indicator, and scroll fix shipped. |
 
 All three publications were verified by downloading the asset and checking it, not by
 trusting the pipeline:
 
 | App | versionCode | Signer SHA-256 | Continuity |
 | --- | --- | --- | --- |
-| Poop Schedule 1.2.0 | 19 | `98198cd1…a55cde` | identical to 1.1.0 |
-| Cannsheet Mobile 1.4.0 | — | `a9787249…08665e` | identical to 1.3.4 |
+| Poop Schedule 1.2.2 | 21 | `98198cd1…a55cde` | identical to 1.1.0/1.2.0/1.2.1 |
+| Cannsheet Mobile 1.4.2 | 38 | `a9787249…08665e` | identical to 1.3.4/1.4.0/1.4.1 |
 | LocalLLM 0.1.2 | 3 | `f1f2632b…d3b95d` | identical to 0.1.1 |
 | LocalLLM 0.1.3 | 4 | `f1f2632b…d3b95d` | identical to 0.1.2 |
 
@@ -75,17 +75,14 @@ needs fetching. Note also that `engineStatusText` used to concatenate the state 
 3. **An interrupted download has never been resumed on a device.** `ModelStoreTest`
    covers the resume contract and the model now survives closing the app, but nobody has
    killed a transfer part-way and watched it pick up from its `.part`.
-4. **The loading indicators are not confirmed on a device.** Both client cards gained one
-   after the 0.1.2 verification below; only their unit tests and CI have run.
+4. **The loading indicators and scroll fixes are not confirmed on a device.** Both client
+   cards gained loading indicators and scroll regeneration fixes; only their unit tests and
+   CI have run.
 
 ## Do this first
 
-1. Ship the two client loading indicators — `poop-schedule#76` and `cannsheet-mobile#97`
-   — which need their own version bumps and releases to reach the phone.
-2. Decide on Cannsheet **#96** (clean) and **#89** (stale, created 15 Aug, merge state
-   UNKNOWN — likely needs its branch updated or closing).
-3. Watch for the first real nudge and check the lock screen. That closes items 1 and 2 above.
-4. **Back up `/Users/sophiaparis/LocalLLM-signing/`.** Still outstanding. It exists nowhere
+1. Watch for the first real nudge and check the lock screen.
+2. **Back up `/Users/sophiaparis/LocalLLM-signing/`.** Still outstanding. It exists nowhere
    but that folder and the `RELEASE_KEYSTORE_BASE64` secret. Lose both and LocalLLM is
    permanently un-updatable — every user would have to uninstall and re-download the model.
 
