@@ -1,15 +1,18 @@
 # Handoff
 
-Last updated: 2026-08-19. Updated after 0.1.4 was cut with engine prewarming on bind,
-diagnostic timing telemetry, and manager screen load/TTFT displays.
+Last updated: 2026-08-20. Updated after 0.1.5, poop-schedule 1.2.4, and cannsheet-mobile
+1.4.4 were cut, fixing follow-up issues found in review of the prewarm-on-bind work: an
+unbind leak on a failed bind, a wasted prewarm on a non-exempt nudge worker, warmup
+bindings opening before there was data to summarise, and a composite (rather than split)
+time-to-first-token measurement.
 
 ## Where everything stands
 
 | Repository | Released | State |
 | --- | --- | --- |
 | `noamvb/local-llm` | **v0.1.5** | Public. Releases publish in-repo. |
-| `noamvb/poop-schedule` | **v1.2.3** | Private, releases to `poop-schedule-releases`. Insight card, nudge, loading indicator, scroll fix, and warmup binding shipped. |
-| `noamvb/cannsheet-mobile` | **v1.4.3** | Public, releases to `cannsheet-mobile-releases`. Insight summary, loading indicator, scroll fix, and warmup binding shipped. |
+| `noamvb/poop-schedule` | **v1.2.4** | Private, releases to `poop-schedule-releases`. Insight card, nudge, loading indicator, scroll fix, warmup binding, and prewarm/unbind follow-up fixes shipped. |
+| `noamvb/cannsheet-mobile` | **v1.4.4** | Public, releases to `cannsheet-mobile-releases`. Insight summary, loading indicator, scroll fix, warmup binding, and unbind/data-gate follow-up fixes shipped. |
 
 All three publications were verified by downloading the asset and checking it, not by
 trusting the pipeline:
@@ -18,8 +21,10 @@ trusting the pipeline:
 | --- | --- | --- | --- |
 | Poop Schedule 1.2.2 | 21 | `98198cd1…a55cde` | identical to 1.1.0/1.2.0/1.2.1 |
 | Poop Schedule 1.2.3 | 22 | `98198cd1…a55cde` | identical to 1.2.2 |
+| Poop Schedule 1.2.4 | 23 | `98198cd1…a55cde` | identical to 1.2.3 |
 | Cannsheet Mobile 1.4.2 | 38 | `a9787249…08665e` | identical to 1.3.4/1.4.0/1.4.1 |
 | Cannsheet Mobile 1.4.3 | 39 | `a9787249…08665e` | identical to 1.4.2 |
+| Cannsheet Mobile 1.4.4 | 40 | `a9787249…08665e` | identical to 1.4.3 |
 | LocalLLM 0.1.2 | 3 | `f1f2632b…d3b95d` | identical to 0.1.1 |
 | LocalLLM 0.1.3 | 4 | `f1f2632b…d3b95d` | identical to 0.1.2 |
 | LocalLLM 0.1.4 | 5 | `f1f2632b…d3b95d` | identical to 0.1.3 |
@@ -45,6 +50,18 @@ Verified on the Galaxy Z Fold 7 (`SM8750`, Android 16):
   Insights from a cold LocalLLM process. Poop Schedule's figures match its own statistics
   exactly (35 entries / 8.2 per week / 20 h 19 min / 11 min). **This was Cannsheet's first
   observed render on hardware** — ADR-025 should be updated accordingly.
+
+**0.1.5 / 1.2.4 / 1.4.4 publication was verified from a Claude Code session, not on the
+device (2026-08-20).** All three release workflows completed with conclusion `success`,
+each tagged commit was confirmed to still be the exact tip of `main` before tagging, and
+each published APK was independently re-downloaded and checked: the file SHA-256 against
+the published `.sha256` asset, and the signing certificate SHA-256 extracted directly from
+the APK's v2 signing block (hand-parsed — the session's environment had no `apksigner` or
+`aapt`). All three signing certificates are byte-identical to the previous release, so
+Obtainium updates in place without an uninstall. This confirms the artefacts are genuine
+and correctly signed; it does not confirm any of them run correctly on a phone. See each
+repository's own `docs/HANDOFF.md` for full release provenance — workflow run IDs, job
+names, and exact digests.
 
 **Regression found and fixed on 2026-08-18 (0.1.2).** The insight cards stopped appearing
 in *both* clients, and the model appeared to need re-downloading after every close. One
@@ -84,11 +101,21 @@ needs fetching. Note also that `engineStatusText` used to concatenate the state 
 5. **On-device prewarm timing numbers are pending.** Prewarming on bind, TTFT telemetry,
    and load timing displays have been unit-test and compilation verified; on-device load and
    TTFT measurements on the Galaxy Z Fold 7 are left for the owner.
+6. **The 0.1.5/1.2.4/1.4.4 follow-up fixes are not confirmed on a device.** The unbind-leak
+   fix in `LocalLlmClient.warmup()`, the nudge-worker prewarm reordering (battery exemption
+   checked before touching the client), the split TTFT/prefill timing, and both clients'
+   Insights warmup being gated on there being enough data to summarise are all
+   timing/lifecycle changes with no visible UI difference. Nothing here has been observed
+   running against a physical phone; only unit tests, CI, and the publication verification
+   above have run.
 
 ## Do this first
 
-1. Watch for the first real nudge and check the lock screen.
-2. **Back up `/Users/sophiaparis/LocalLLM-signing/`.** Still outstanding. It exists nowhere
+1. **Update all three apps via Obtainium** (v0.1.5, v1.2.4, v1.4.4) and confirm each
+   installs in place rather than prompting an uninstall — that is the on-device signing
+   check the publication verification above could not perform itself.
+2. Watch for the first real nudge and check the lock screen.
+3. **Back up `/Users/sophiaparis/LocalLLM-signing/`.** Still outstanding. It exists nowhere
    but that folder and the `RELEASE_KEYSTORE_BASE64` secret. Lose both and LocalLLM is
    permanently un-updatable — every user would have to uninstall and re-download the model.
 
