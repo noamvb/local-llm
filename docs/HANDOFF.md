@@ -11,6 +11,31 @@ The accepted target boundary is recorded in `docs/ASSISTANT_ARCHITECTURE.md` and
 separate version-two host, then both client providers and assistant surfaces. No device or
 production-data action is implied by that roadmap.
 
+## Unreleased Stage 1 model-acquisition foundation
+
+The `codex/localllm-modelstore-recovery` worktree is rebased onto `origin/main` at
+`f94e439`, including the checked-in FunctionGemma research scaffold, but is not merged or
+released. It serializes transfer/delete/prune ownership; immediately cancels blocked
+OkHttp work; retains resumable partial bytes; validates Range/206/416, response count,
+pinned size, storage headroom, and checksum; coalesces monotonic progress; and atomically
+replaces a previous target only after verification. Engine pruning now awaits that
+suspending ownership boundary, and cancellation while that cleanup is waiting is rethrown
+so preparation cannot publish a newly initialized engine as ready after its owner has
+cancelled it. No version, signing, AIDL, Binder/client, manager UI, or release configuration
+changed.
+
+Local JDK 17 evidence on 2026-08-23:
+
+- `./gradlew --no-daemon testDebugUnitTest --tests com.noamv.localllm.ModelStoreTest`
+  passed 35 tests with zero failures, errors, or skips.
+- `./gradlew --no-daemon testDebugUnitTest assembleDebug lintDebug` passed: 82 unit tests
+  with zero failures, errors, or skips, debug APK assembly, and Android lint.
+
+This is static/JVM evidence only. No model was downloaded from the network, no app was
+installed or launched, and no emulator, ADB, phone, production data, publication, or
+physical cancel/resume scenario was accessed. The historical device limitations below
+therefore remain unchanged.
+
 ## Where everything stands
 
 | Repository | Released | State |
