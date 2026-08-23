@@ -1,18 +1,23 @@
 # Handoff
 
-Last updated: 2026-08-20. Updated after 0.1.5, poop-schedule 1.2.4, and cannsheet-mobile
-1.4.4 were cut, fixing follow-up issues found in review of the prewarm-on-bind work: an
-unbind leak on a failed bind, a wasted prewarm on a non-exempt nudge worker, warmup
-bindings opening before there was data to summarise, and a composite (rather than split)
-time-to-first-token measurement.
+Last updated: 2026-08-23. LocalLLM 0.1.5 remains the released host. The client repositories
+have since advanced independently to Poop Schedule 1.3.0 and Cannsheet Mobile 1.6.2. The
+older LocalLLM integration and device evidence below remains historical evidence for the
+versions named in each paragraph; it is not evidence that the accepted assistant roadmap
+or its version-two protocol has been implemented.
+
+The accepted target boundary is recorded in `docs/ASSISTANT_ARCHITECTURE.md` and the
+2026-08-23 decisions. Work is staged: version-one trust/reliability repairs first, then a
+separate version-two host, then both client providers and assistant surfaces. No device or
+production-data action is implied by that roadmap.
 
 ## Where everything stands
 
 | Repository | Released | State |
 | --- | --- | --- |
 | `noamvb/local-llm` | **v0.1.5** | Public. Releases publish in-repo. |
-| `noamvb/poop-schedule` | **v1.2.4** | Private, releases to `poop-schedule-releases`. Insight card, nudge, loading indicator, scroll fix, warmup binding, and prewarm/unbind follow-up fixes shipped. |
-| `noamvb/cannsheet-mobile` | **v1.4.4** | Public, releases to `cannsheet-mobile-releases`. Insight summary, loading indicator, scroll fix, warmup binding, and unbind/data-gate follow-up fixes shipped. |
+| `noamvb/poop-schedule` | **v1.3.0** | Private, releases to `poop-schedule-releases`. Its later NFC timer-tag release is independent of the LocalLLM roadmap. |
+| `noamvb/cannsheet-mobile` | **v1.6.2** | Public, releases to `cannsheet-mobile-releases`. Its later NFC quick-log releases are independent of the LocalLLM roadmap. |
 
 All three publications were verified by downloading the asset and checking it, not by
 trusting the pipeline:
@@ -21,10 +26,10 @@ trusting the pipeline:
 | --- | --- | --- | --- |
 | Poop Schedule 1.2.2 | 21 | `98198cd1…a55cde` | identical to 1.1.0/1.2.0/1.2.1 |
 | Poop Schedule 1.2.3 | 22 | `98198cd1…a55cde` | identical to 1.2.2 |
-| Poop Schedule 1.2.4 | 23 | `98198cd1…a55cde` | identical to 1.2.3 |
+| Poop Schedule 1.3.0 | 24 | `98198cd1…a55cde` | identical to 1.2.4 |
 | Cannsheet Mobile 1.4.2 | 38 | `a9787249…08665e` | identical to 1.3.4/1.4.0/1.4.1 |
 | Cannsheet Mobile 1.4.3 | 39 | `a9787249…08665e` | identical to 1.4.2 |
-| Cannsheet Mobile 1.4.4 | 40 | `a9787249…08665e` | identical to 1.4.3 |
+| Cannsheet Mobile 1.6.2 | 47 | `a9787249…08665e` | identical to 1.6.1/1.6.0/1.5.2 |
 | LocalLLM 0.1.2 | 3 | `f1f2632b…d3b95d` | identical to 0.1.1 |
 | LocalLLM 0.1.3 | 4 | `f1f2632b…d3b95d` | identical to 0.1.2 |
 | LocalLLM 0.1.4 | 5 | `f1f2632b…d3b95d` | identical to 0.1.3 |
