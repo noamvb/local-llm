@@ -11,30 +11,86 @@ The accepted target boundary is recorded in `docs/ASSISTANT_ARCHITECTURE.md` and
 separate version-two host, then both client providers and assistant surfaces. No device or
 production-data action is implied by that roadmap.
 
-## Unreleased Stage 1 model-acquisition foundation
+## Merged Stage 1 model-acquisition foundation
 
-The `codex/localllm-modelstore-recovery` worktree is rebased onto `origin/main` at
-`f94e439`, including the checked-in FunctionGemma research scaffold, but is not merged or
-released. It serializes transfer/delete/prune ownership; immediately cancels blocked
-OkHttp work; retains resumable partial bytes; validates Range/206/416, response count,
-pinned size, storage headroom, and checksum; coalesces monotonic progress; and atomically
-replaces a previous target only after verification. Engine pruning now awaits that
-suspending ownership boundary, and cancellation while that cleanup is waiting is rethrown
-so preparation cannot publish a newly initialized engine as ready after its owner has
-cancelled it. No version, signing, AIDL, Binder/client, manager UI, or release configuration
-changed.
+PR #19 merged as `7ad2bd1f2ebb194b071d061c7c7483dabc9d8116`. Exact-main run
+`32650705249` passed both required jobs. It serializes transfer/delete/prune ownership;
+immediately cancels blocked OkHttp work; retains resumable partial bytes; validates
+Range/206/416, response count, pinned size, storage headroom, and checksum; coalesces
+monotonic progress; and atomically replaces a previous target only after verification.
+Engine pruning awaits that suspending ownership boundary and preserves coroutine
+cancellation.
 
-Local JDK 17 evidence on 2026-08-23:
+Local JDK 17 evidence on 2026-08-23 was 35 focused ModelStore tests and 82 full JVM tests,
+all passing with zero failures, errors, or skips, plus successful debug assembly and lint.
+This remains static/JVM evidence only: no real model network transfer or physical
+cancel/resume scenario was exercised.
 
-- `./gradlew --no-daemon testDebugUnitTest --tests com.noamv.localllm.ModelStoreTest`
-  passed 35 tests with zero failures, errors, or skips.
-- `./gradlew --no-daemon testDebugUnitTest assembleDebug lintDebug` passed: 82 unit tests
-  with zero failures, errors, or skips, debug APK assembly, and Android lint.
+## Unreleased v1 Binder hardening
 
-This is static/JVM evidence only. No model was downloaded from the network, no app was
-installed or launched, and no emulator, ADB, phone, production data, publication, or
-physical cancel/resume scenario was accessed. The historical device limitations below
-therefore remain unchanged.
+Branch `codex/localllm-v1-security` adds mutual package/signing-lineage authentication,
+same-session API negotiation, finite client deadlines, exact-once connection failure
+handling, callback request-ID validation, callback Binder-death cancellation, and
+typed progress/draft/completion/failure delivery with authoritative final text. It pins
+the exact service class, caps callbacks queued before ID assignment, explicitly declares
+which service API versions support v1, and rejects the unimplemented v1 `resultSchema`
+instead of promising structured output.
+
+Independent review additionally moved prewarm behind exact transaction authorization,
+made one bind deadline cover package resolution and connection, fenced and tracked the
+generation submission worker, compiled the copy-ready client at minSdk 24, and added the
+deterministic `scripts/localllm_v1_client.sh` copy/digest/check procedure. A timed-out
+version call cannot later transmit facts. The residual platform boundary is explicit: an
+already-entered synchronous Binder request cannot be interrupted, so its late request ID
+is cancelled as soon as it returns.
+
+A second independent review found and drove three final race/provenance corrections: a
+CAS-defined submission-begin boundary, one synchronized pending/delivered/terminal bind
+owner, and a copy/check rule that refuses uncommitted canonical bytes and verifies both
+recorded commit and digest. These replace the earlier read-only check and split bind state
+that could still lose a narrow timeout race.
+
+Final bind-registration review then found that terminal cleanup could still run before a
+synchronous `bindService()` call finished registering its `ServiceConnection`. Cleanup is
+now remembered and the actual unbind is delivered exactly once after that call returns;
+the Binder/death-recipient link is also published and unlinked as one pair. Fake binding
+tests force both timeout-immediately-before-registration and timeout-during-registration
+orderings and prove that neither leaves the fake connection registered.
+
+A final delivery-arbitration review found that callback admission still lived in a
+different state machine from timeout/death failure and channel closure. The callback gate
+now owns request-ID validation, first-response admission and timer cancellation, every
+checked `trySend`, terminal selection, and close under one lock. Latch-forced races cover
+authoritative completion versus total timeout, an admitted draft versus Binder death on
+the actual conflated channel, and both winners of first response versus its deadline.
+
+The AIDL method order and signatures are unchanged. The canonical `client` tree is now a
+buildable Android library module with unit coverage for package/signer policy, signing-key
+rotation, shared-UID rejection, pre-ID callback races, ID mismatch, completion-only text,
+authoritative final replacement, progress payloads, pre-ID callback flood, future unknown
+API versions and channel-delivery failure. The deprecated string wrapper remains
+source-compatible and emits completion only, so all three current append-based Cannsheet
+and Poop Schedule call sites remain behaviorally safe after vendoring.
+
+After the delivery-arbitration fix, an isolated JDK 17 focused gate passed all 15 callback
+delivery and arbitration tests after their competing threads were forced to block on the
+shared monitor. The final isolated command used `--no-daemon`, `--rerun-tasks`, `clean`,
+`testDebugUnitTest`, `assembleDebug`, `lintDebug`, and
+`-Pkotlin.compiler.execution.strategy=in-process`. It passed all 140 JVM tests (95 app and
+45 client) with zero failures, errors or skips; both debug artifacts assembled; app lint
+completed with 24 warnings and no errors; client lint had no issues.
+`bash scripts/localllm_v1_client.sh check-local` passed at canonical digest
+`fafc994962f895399bdf2e2702255a31388236726847660e41f1a161aaa38f4b`, and the earlier
+negative copy test confirmed dirty canonical source is rejected before any provenance file
+is written. No Android instrumentation, physical-device or cross-process
+package-replacement test has been run.
+
+Signer pins were re-derived from independently downloaded current release APKs on
+2026-08-23: LocalLLM v0.1.5, Poop Schedule v1.3.0 and Cannsheet Mobile v1.6.2. This work has
+not been merged, released, installed or exercised on a device. Downstream client
+copies and their append-style collectors are intentionally not changed in this branch;
+they can vendor the canonical client without changing their append behavior in coordinated
+follow-up PRs, while new UI should consume the typed event API.
 
 ## Where everything stands
 

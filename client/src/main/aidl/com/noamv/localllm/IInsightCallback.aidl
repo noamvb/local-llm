@@ -18,7 +18,7 @@ oneway interface IInsightCallback {
      * Terminal success.
      *
      * @param text       the full generated narrative
-     * @param resultJson the structured result when the request supplied a schema, else null
+     * @param resultJson reserved for a later contract; always null in v1
      */
     void onComplete(String requestId, String text, String resultJson);
 

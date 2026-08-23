@@ -50,25 +50,95 @@ safe boundary before unload. OOM closes and forgets the poisoned handle while re
 the verified artifact and proven-build preference for a clean retry. Model files are
 pruned only after another build has initialized successfully.
 
-## 2026-08-23 — Authenticate every Binder peer by package and signing lineage
+## 2026-08-23 — Authenticate every Binder peer and make v1 delivery finite
 
 **Decision.** Keep Android's signature-gated permissions as defense in depth, and add
-reciprocal runtime identity checks. A client verifies the exact LocalLLM component and an
-approved current signer or signing lineage before any bind. LocalLLM derives the caller
-from `Binder.getCallingUid()` and accepts only an approved package-plus-signing-lineage
-pair among the packages Android reports for that UID. Caller-provided `clientId` values
-remain descriptive metadata and never grant access, priority, quota, or attribution.
+reciprocal runtime identity checks. Before every bind, the canonical v1 client inspects
+the pinned LocalLLM service class and authenticates an approved current signer or
+Android-authenticated signing lineage. LocalLLM derives the caller independently from
+`Binder.getCallingUid()` for every transaction and accepts only an approved production
+package-plus-signing-lineage pair among the packages Android reports for that UID.
+Caller-provided `clientId` values remain descriptive metadata and never grant access,
+priority, quota, cancellation authority, or attribution.
+
+The client negotiates `getApiVersion()` on the same binding it uses and accepts only
+service API versions explicitly declared v1-capable, rather than treating every larger
+integer as compatible. Bind, engine status,
+first response and total generation each have a finite deadline. Null binding/Binder,
+binding death, package replacement, service process death, and mismatched callback
+request IDs terminate exactly once. Cancellation before the synchronous request call
+returns its ID is retained and forwarded once that ID arrives. The service links each
+callback Binder to death so a dead client cancels its native request rather than occupying
+the serial engine queue.
+
+A simple bind is inert. Only an exact authorized transaction may initiate engine work;
+`getApiVersion()` starts the existing non-downloading prewarm after caller authorization,
+while an authorized generation request still prepares on demand. One bind deadline spans
+package/signing resolution and service connection. Generation's version negotiation uses
+the status deadline. A CAS-owned `OPEN`/`SUBMISSION_BEGUN`/`STOPPED` gate linearizes
+submission against timeout or collector cancellation. An already-entered synchronous
+Binder request cannot be interrupted, so a late returned ID is cancelled immediately.
+Bind connection, deadline, death, cancellation, and successful delivery similarly share
+one synchronized state owner, preventing an already-failed bind from later resuming a dead
+session. Registration cleanup has its own two-phase owner: a terminal outcome may request
+cleanup at any time, but the actual unbind is delivered exactly once only after the
+synchronous `bindService()` call returns. A timeout or cancellation immediately before or
+during registration therefore cannot spend its only unbind before the connection exists.
+
+The public streaming API emits typed progress, full replaceable draft snapshots,
+authoritative completion, and terminal failure. `onComplete.text` replaces the streamed
+draft, including completion-only responses; a conflated channel keeps the latest event,
+and the queue that can form before request-ID assignment is capped at 64. The deprecated
+string API emits only authoritative completion once so existing append-based collectors
+remain correct. Contract v1 explicitly rejects non-null `resultSchema` because it does
+not implement constrained structured decoding.
+
+Callback admission and delivery do not use a second terminal flag outside the callback
+gate. One synchronized owner performs request-ID validation, first-response admission and
+timer cancellation, nonterminal `trySend`, terminal selection and checked terminal
+`trySend`, and flow closure. This gives an admitted callback and a concurrent generation
+deadline or Binder death one explicit linearization order. Completion claims terminal
+ownership before publishing authoritative `onComplete.text`; a later failure cannot close
+or overwrite it. If a draft or progress value wins admission first, a later failure may
+replace that advisory value in the conflated channel and becomes the sole terminal event.
 
 **Why.** The current outbound client trusts only a package name, while the inbound
 permission intentionally recognizes multiple certificates. That is broad enough for an
 approved signer to claim another client's `clientId`, and a wrong same-package LocalLLM
 installation could receive facts from a client that checks only the package name.
 
-**Consequences.** Expected SHA-256 values come from independently verified published APKs
-and release workflows pin them explicitly. Package replacement and signer mismatch make
-the peer unavailable before facts are read or transmitted. The version-one AIDL layout is
-preserved while signer checks, same-session version negotiation, finite timeouts, and
-Binder-death handling are added to its implementation.
+**Signer evidence.** Values were read on 2026-08-23 with Android build-tools 36.0.0
+`apksigner verify --print-certs` from independently downloaded current release APKs:
+
+| Identity | Artifact | Certificate SHA-256 |
+| --- | --- | --- |
+| LocalLLM | v0.1.5 | `f1f2632b76d0edbd40c839a86c7d6eec63ec74f3d5095726a6f676ba1ad3b95d` |
+| Poop Schedule | v1.3.0 | `98198cd143954c564faa0cc6408918edbc1a2311f2f4817cfe89223923a55cde` |
+| Cannsheet Mobile | v1.6.2 | `a9787249b106d98a421ed839789361a45753e367e243820d10d2f3a09708665e` |
+
+**Consequences.**
+
+- A different APK installed under `com.noamv.localllm` cannot receive tracker facts unless
+  Android proves it descends from the pinned LocalLLM signing lineage.
+- An app signed by an otherwise known certificate cannot call the service under a new
+  package name. Shared UIDs are rejected because Binder cannot identify which package on
+  the UID originated a transaction.
+- Legitimate signing-key rotation remains possible through Android's authenticated
+  signing history; unrelated current or multi-signer packages fail closed.
+- Package replacement and signer mismatch make the peer unavailable before facts are read
+  or transmitted.
+- The AIDL method order and signatures remain byte-for-byte compatible. The canonical
+  client is now built as a minSdk-24 Android library module so copy-only source cannot
+  silently stop compiling for the oldest consumer. It fails closed below the API-31 host
+  minimum before using newer signing APIs.
+- `scripts/localllm_v1_client.sh` is the sole vendoring/check command. A checked canonical
+  digest and LocalLLM CI protect the in-repository copy; client CI gains the matching
+  cross-repository drift check when each merged canonical copy is vendored. Copying fails
+  if canonical bytes differ from `HEAD`; consumer verification authenticates the recorded
+  repository, exact commit, and digest instead of trusting a working-tree hash alone.
+- New downstream collectors replace their draft text on each `generateEvents()` `Draft`
+  and then replace it with `Complete.text`. Existing append-based `generate()` collectors
+  remain behaviorally safe because that deprecated adapter emits completion only.
 
 ## 2026-08-23 — Add a separate aggregate-only version-two assistant protocol
 
@@ -174,6 +244,11 @@ device actions.
 - Internal telemetry structures (`EngineTimings`) remain app-internal and do not alter AIDL contracts.
 
 ## 2026-08-19 — Prewarm the engine on bind, and measure where the time goes
+
+**Superseded security detail (2026-08-23).** A manifest-permission bind is no longer
+allowed to prewarm by itself. The canonical warmup still starts the same non-downloading
+work, but only through an exact caller-authorized `getApiVersion()` transaction. The
+timing and process-lifetime rationale below remains historical context.
 
 **Decision.** `InferenceService` initiates non-downloading model prewarming (`LocalLlmApplication.prewarmModel`) on `onBind` and `onRebind`, and `onUnbind` returns `true`. Model load duration and time-to-first-token (TTFT) metrics are measured in `LiteRtEngine` and surfaced on the manager screen and in logcat. `LocalLlmClient` gains an idempotent `warmup(): AutoCloseable` handle.
 

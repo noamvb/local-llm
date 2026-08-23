@@ -23,6 +23,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Verify canonical v1 client copies and digest
+        run: bash scripts/localllm_v1_client.sh check-local
+
       - name: Scan for forbidden tracked files
         shell: bash
         run: |

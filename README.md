@@ -74,15 +74,43 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew assembleDebug
 
 ## Integrating a client app
 
-Copy the `client/src/main` tree into the client module, add `aidl = true` to its
-`buildFeatures`, and declare the permission and `<queries>` entry described at the top of
+LocalLLM owns the canonical version-one client. Copy it with the checked procedure rather
+than selecting files by hand:
+
+```bash
+bash scripts/localllm_v1_client.sh copy /absolute/path/to/client-repository
+bash scripts/localllm_v1_client.sh check /absolute/path/to/client-repository
+```
+
+The command replaces only the version-one AIDL, client and contract subtrees, then writes
+`app/localllm-v1-client.provenance` with the LocalLLM commit and canonical source digest.
+It refuses to copy when the canonical source, checked digest, or host-side copies differ
+from `HEAD`, so an immutable commit can never be recorded for uncommitted bytes.
+Consumers must run the matching `check` command in CI after vendoring. LocalLLM itself
+runs `check-local` in CI so its service-side AIDL/contract copy and checked
+`client/V1_SOURCE_SHA256` cannot drift. The consuming module also needs `aidl = true` in
+its `buildFeatures` and the permission and `<queries>` entry described at the top of
 `client/src/main/java/com/noamv/localllm/client/LocalLlmClient.kt`.
+
+Use `LocalLlmClient.generateEvents()` for typed `Progress`, replaceable `Draft`, terminal
+`Complete`, and terminal `Failure` events. The terminal `Complete.text` is authoritative.
+The deprecated `generate()` wrapper deliberately emits only that terminal text, exactly
+once, so existing Cannsheet and Poop Schedule collectors that append strings remain safe
+when they vendor the hardened client. The helper authenticates the LocalLLM release
+signing lineage and the pinned `com.noamv.localllm.service.InferenceService` component
+before every bind, then negotiates the API version on that same connection. The canonical
+tree is compiled at the oldest current consumer level, API 24; on Android versions below
+the host's API-31 minimum it fails closed as unavailable before using newer signing APIs.
 
 The inference permission uses `signature|knownSigner`, so a client is granted access if
 it is signed either by LocalLLM's own key or by a certificate listed in
 `app/src/main/res/values/known_signers.xml`. The three apps in this family are signed by
 three different keys, so that list is what makes the permission work at all — adding a new
 client means adding its certificate digest and shipping a new LocalLLM.
+
+The service also maintains an exact runtime package-plus-signer allowlist. Adding a client
+therefore requires both its published certificate and its production application ID; a
+self-declared request `clientId` never grants access.
 
 **LocalLLM must be installed before the clients**, because Android only grants a
 signature-level permission if the app defining it is already present.
