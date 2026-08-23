@@ -2,6 +2,28 @@
 
 Durable choices and the evidence behind them. Newest first.
 
+## 2026-08-23 — Persist a proven fallback and give one coordinator the native engine
+
+**Decision.** Persist the ID of the last compatible build that initialized successfully,
+try that still-installed build before a missing preferred artifact after process
+recreation, and route preparation, generation, unload, close, critical trim, and
+out-of-memory recovery through one mutex-owned native-engine lifecycle.
+
+**Why.** A working CPU fallback became invisible after close or process death because
+startup status considered only the preferred build. That could report no model and pay for
+another multi-gigabyte preferred download. Separately, trim and close could invalidate a
+native handle while preparation or generation still owned it, and a newly constructed
+`Engine` leaked when `initialize()` threw.
+
+**Consequences.** Installed compatible candidates precede missing ones. Acquisition and
+backend-initialization failures remain different categories: a network, storage or
+checksum failure stops acquisition and cannot become `UNSUPPORTED_DEVICE`, while a
+verified artifact whose backend fails may fall through to another compatible backend.
+Critical trim cancels process-owned preparation but waits for native generation to reach a
+safe boundary before unload. OOM closes and forgets the poisoned handle while retaining
+the verified artifact and proven-build preference for a clean retry. Model files are
+pruned only after another build has initialized successfully.
+
 ## 2026-08-23 — Authenticate every Binder peer by package and signing lineage
 
 **Decision.** Keep Android's signature-gated permissions as defense in depth, and add

@@ -113,4 +113,27 @@ object ModelCatalog {
     /** Builds to try, in order, when [primary] cannot be initialised. */
     fun fallbacksFor(primary: ModelBuild): List<ModelBuild> =
         listOf(primary) + listOf(E2B_GPU, E2B_CPU).filter { it.id != primary.id }
+
+    /**
+     * Startup order that prefers a previously proven, still-installed compatible build.
+     *
+     * Installed candidates follow before missing candidates. This prevents a working CPU
+     * fallback from becoming invisible after process recreation and avoids re-downloading
+     * a preferred GPU build that already failed while a proven CPU artifact is available.
+     */
+    fun startupOrder(
+        primary: ModelBuild,
+        lastSuccessfulBuildId: String?,
+        isInstalled: (ModelBuild) -> Boolean,
+    ): List<ModelBuild> {
+        val compatible = fallbacksFor(primary)
+        val proven = compatible.firstOrNull {
+            it.id == lastSuccessfulBuildId && isInstalled(it)
+        }
+        return buildList {
+            if (proven != null) add(proven)
+            addAll(compatible.filter { it.id != proven?.id && isInstalled(it) })
+            addAll(compatible.filter { it.id != proven?.id && !isInstalled(it) })
+        }
+    }
 }

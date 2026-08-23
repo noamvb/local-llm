@@ -29,4 +29,10 @@ interface LlmEngine : AutoCloseable {
      * concurrently, because two simultaneous generations on a phone will exhaust memory.
      */
     fun generate(request: InsightRequest): Flow<String>
+
+    /**
+     * Releases the loaded native engine after any in-progress operation reaches a safe
+     * boundary. The verified model artifact remains installed.
+     */
+    suspend fun unload()
 }
