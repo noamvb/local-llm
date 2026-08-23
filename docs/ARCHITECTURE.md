@@ -63,8 +63,20 @@ contiguous allocation. Two decisions follow:
 
 - The engine lives on `LocalLlmApplication`, not on the service, so it survives unbind
   and rebind. Otherwise every app switch would pay a reload.
-- `onTrimMemory(TRIM_MEMORY_RUNNING_CRITICAL)` closes the engine deliberately. Paying a
-  reload is better than having the process killed mid-generation.
+- One lifecycle coordinator owns the native handle and serializes preparation,
+  generation, unload, close and critical trim. A trim request waits for active native
+  inference to finish before closing the handle; it never races `Engine.initialize()` or
+  `Engine.close()` against generation.
+- `onTrimMemory(TRIM_MEMORY_RUNNING_CRITICAL)` cancels process-owned preparation while
+  preserving any resumable partial download, then schedules a coordinated unload. Paying
+  a reload is better than having the process killed mid-generation.
+
+The ID of the last build that initialized successfully is persisted in private app
+preferences. On process recreation, a still-installed compatible proven fallback is tried
+before a missing preferred build. Other installed compatible candidates also precede
+downloads. Acquisition failures remain distinct from backend initialization failures, so
+a network, storage or checksum problem cannot become a permanent unsupported-device state
+or trigger another fallback download.
 
 A fresh `Conversation` is created per request. Conversations are cheap and this keeps
 state from leaking between the two client apps.

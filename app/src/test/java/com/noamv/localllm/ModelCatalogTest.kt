@@ -45,6 +45,48 @@ class ModelCatalogTest {
     }
 
     @Test
+    fun `a proven installed CPU fallback is preferred after process recreation`() {
+        val installed = setOf(ModelCatalog.E2B_GPU.id, ModelCatalog.E2B_CPU.id)
+
+        val order = ModelCatalog.startupOrder(
+            primary = ModelCatalog.E2B_GPU,
+            lastSuccessfulBuildId = ModelCatalog.E2B_CPU.id,
+            isInstalled = { it.id in installed },
+        )
+
+        assertEquals(
+            listOf(ModelCatalog.E2B_CPU.id, ModelCatalog.E2B_GPU.id),
+            order.map { it.id },
+        )
+    }
+
+    @Test
+    fun `installed compatible fallback is tried before downloading a missing preferred build`() {
+        val order = ModelCatalog.startupOrder(
+            primary = ModelCatalog.E2B_GPU,
+            lastSuccessfulBuildId = null,
+            isInstalled = { it.id == ModelCatalog.E2B_CPU.id },
+        )
+
+        assertEquals(ModelCatalog.E2B_CPU.id, order.first().id)
+        assertEquals(ModelCatalog.E2B_GPU.id, order.last().id)
+    }
+
+    @Test
+    fun `stale or incompatible proven build id cannot escape the fallback chain`() {
+        val order = ModelCatalog.startupOrder(
+            primary = ModelCatalog.E2B_GPU,
+            lastSuccessfulBuildId = ModelCatalog.E2B_NPU_SM8750.id,
+            isInstalled = { true },
+        )
+
+        assertEquals(
+            listOf(ModelCatalog.E2B_GPU.id, ModelCatalog.E2B_CPU.id),
+            order.map { it.id },
+        )
+    }
+
+    @Test
     fun `every build has a plausible digest and size`() {
         ModelCatalog.all.forEach { build ->
             assertEquals("${build.id} digest length", 64, build.sha256.length)

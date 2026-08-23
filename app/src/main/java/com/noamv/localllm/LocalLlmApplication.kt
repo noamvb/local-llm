@@ -8,6 +8,7 @@ import com.noamv.localllm.engine.shouldPrewarmOnBind
 import com.noamv.localllm.model.ModelStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -37,7 +38,9 @@ class LocalLlmApplication : Application() {
 
     val modelStore: ModelStore by lazy { ModelStore(this, httpClient) }
 
-    val engine: LlmEngine by lazy { LiteRtEngine(this, modelStore) }
+    private val engineDelegate = lazy<LlmEngine> { LiteRtEngine(this, modelStore) }
+    val engine: LlmEngine
+        get() = engineDelegate.value
 
     /**
      * Scope for work that has to outlive whatever screen started it.
@@ -49,6 +52,7 @@ class LocalLlmApplication : Application() {
 
     @Volatile
     private var prepareJob: Job? = null
+    private val prepareJobLock = Any()
 
     /**
      * Downloads and loads the model, and keeps going when the user leaves.
@@ -63,16 +67,31 @@ class LocalLlmApplication : Application() {
      * so nothing is lost by not returning them here.
      */
     fun prepareModel(): Job {
-        prepareJob?.takeIf { it.isActive }?.let { return it }
-        return applicationScope.launch {
-            try {
-                engine.prepare()
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: Throwable) {
-                Log.w(TAG, "Model preparation failed", error)
+        synchronized(prepareJobLock) {
+            prepareJob?.takeIf { it.isActive }?.let { return it }
+
+            // Register the lazy job before it can complete. The earlier launch-then-store
+            // sequence allowed a fast failure to finish before prepareJob was assigned,
+            // after which callers could retain a stale completed job.
+            lateinit var newJob: Job
+            newJob = applicationScope.launch(start = CoroutineStart.LAZY) {
+                try {
+                    engine.prepare()
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Throwable) {
+                    Log.w(TAG, "Model preparation failed", error)
+                }
             }
-        }.also { prepareJob = it }
+            prepareJob = newJob
+            newJob.invokeOnCompletion {
+                synchronized(prepareJobLock) {
+                    if (prepareJob === newJob) prepareJob = null
+                }
+            }
+            newJob.start()
+            return newJob
+        }
     }
 
     /**
@@ -97,9 +116,13 @@ class LocalLlmApplication : Application() {
     @Suppress("DEPRECATION")
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        if (level >= TRIM_MEMORY_RUNNING_CRITICAL) {
-            engine.close()
-        }
+        if (level < TRIM_MEMORY_RUNNING_CRITICAL || !engineDelegate.isInitialized()) return
+
+        // Cancelling process-owned preparation preserves ModelStore's partial download.
+        // Native generation itself is not pre-empted: unload waits behind the engine's
+        // lifecycle coordinator and closes only after generation reaches a safe boundary.
+        synchronized(prepareJobLock) { prepareJob?.cancel() }
+        applicationScope.launch { engine.unload() }
     }
 
     companion object {
