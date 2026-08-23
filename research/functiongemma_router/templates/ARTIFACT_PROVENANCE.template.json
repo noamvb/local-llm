@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "artifactRole": "ROUTER",
+  "releaseStatus": "BLOCKED_TEMPLATE",
+  "grammarVersion": 1,
+  "language": "en",
+  "baseModel": {
+    "modelId": "google/functiongemma-270m-it",
+    "immutableRevision": "REQUIRED",
+    "sha256": "REQUIRED"
+  },
+  "training": {
+    "repositoryCommit": "REQUIRED",
+    "experimentConfigSha256": "REQUIRED",
+    "trainingManifestSha256": "REQUIRED",
+    "seed": "REQUIRED",
+    "hyperparametersSha256": "REQUIRED",
+    "packageLockSha256": "REQUIRED",
+    "syntheticOnly": true,
+    "personalQuestionsUsedForTraining": false
+  },
+  "conversion": {
+    "tool": "REQUIRED",
+    "immutableRevision": "REQUIRED",
+    "commandSha256": "REQUIRED",
+    "runtimeName": "LiteRT-LM",
+    "runtimeVersion": "REQUIRED",
+    "functionGemmaChatTemplatePreserved": false,
+    "manualToolCallingVerified": false,
+    "constrainedOutputVerified": false
+  },
+  "artifact": {
+    "id": "REQUIRED",
+    "version": "REQUIRED",
+    "fileName": "REQUIRED",
+    "bytes": 0,
+    "sha256": "REQUIRED",
+    "source": "REQUIRED",
+    "rollbackArtifactId": "REQUIRED"
+  },
+  "evaluation": {
+    "productionCorpus": false,
+    "independentHumanReviewComplete": false,
+    "corpusManifestSha256": "REQUIRED",
+    "reportSha256": "REQUIRED",
+    "artifactSha256": "REQUIRED",
+    "allRouterGatesPassed": false,
+    "balancedOperationReviewPassed": false
+  },
+  "deviceEvaluation": {
+    "intendedDevice": "REQUIRED",
+    "artifactSha256": "REQUIRED",
+    "warmRouterP95Millis": 0,
+    "peakRssBytes": 0,
+    "outOfMemoryObserved": true,
+    "serviceDeathObserved": true,
+    "severeThermalObserved": true,
+    "routerWriterAlternationPassed": false,
+    "oneRoleResidencyPassed": false
+  },
+  "distributionReview": {
+    "termsUrl": "https://ai.google.dev/gemma/terms",
+    "termsVersionReviewed": "REQUIRED",
+    "prohibitedUseUrl": "https://ai.google.dev/gemma/prohibited_use_policy",
+    "termsAcceptedBy": "REQUIRED",
+    "termsAcceptedAtUtc": "REQUIRED",
+    "decision": "NOT_REVIEWED",
+    "approvedBy": "REQUIRED",
+    "approvalRecord": "REQUIRED",
+    "agreementCopySha256": "REQUIRED",
+    "noticeFileSha256": "REQUIRED",
+    "modifiedFilesMarked": false,
+    "downstreamUseRestrictionsProvided": false,
+    "prohibitedUseReviewed": false
+  },
+  "signedManifest": {
+    "manifestSha256": "REQUIRED",
+    "signingKeyId": "REQUIRED",
+    "signatureVerified": false,
+    "independentRedownloadVerified": false
+  }
+}
