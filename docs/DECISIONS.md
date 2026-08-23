@@ -2,6 +2,32 @@
 
 Durable choices and the evidence behind them. Newest first.
 
+## 2026-08-23 — Serialize model-file ownership and make resume protocol-strict
+
+**Decision.** Give one coroutine-owned coordinator exclusive access to model transfers,
+deletion, and pruning. Cancel the live OkHttp call with its owning coroutine, retain useful
+partial bytes, continue across bounded valid 206 chunks with strict progress, and verify
+the pinned size and SHA-256 before atomically replacing any installed model.
+
+**Why.** The previous range implementation issued only one response per owner action,
+could wait for an OkHttp timeout after coroutine cancellation, reported every 64 KiB
+fragment, and allowed delete/prune to race an active transfer. Protocol, response-close,
+local-file, checksum, and promotion failures were not consistently distinguishable.
+These gaps made a multi-gigabyte recovery path both fragile and difficult to classify
+without risking a known-good installed artifact.
+
+**Consequences.** A valid partial reduces the free-space requirement to its remaining
+bytes plus headroom. Invalid ranges, oversized/short bodies, repeated 416 responses, and
+excessive partial-response loops stop deterministically without promoting the artifact.
+Network reads and closes are reported separately from local open/write/sync failures.
+Delete is suspending: it cancels a matching transfer and waits for ownership rather than
+blocking the caller's thread. Progress is monotonic and percentage-coalesced. A verified
+replacement is promoted atomically; checksum, cancellation, promotion failure, and OOM
+preserve the previous installed target as applicable, and OOM remains an OOM for engine
+recovery rather than being wrapped as an acquisition exception. Ordinary pruning failure
+remains best-effort after a successful initialization, while pruning cancellation is
+re-thrown so a cancelled prepare cannot publish or retain the new native engine.
+
 ## 2026-08-23 — Persist a proven fallback and give one coordinator the native engine
 
 **Decision.** Persist the ID of the last compatible build that initialized successfully,

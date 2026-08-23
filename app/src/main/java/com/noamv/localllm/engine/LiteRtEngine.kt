@@ -337,16 +337,19 @@ class LiteRtEngine internal constructor(
         }
     }
 
-    private fun reclaimOtherBuilds(build: ModelBuild) {
-        try {
-            val reclaimed = store.pruneExcept(build)
-            if (reclaimed > 0) {
-                Log.i(TAG, "Reclaimed ${reclaimed / 1_000_000} MB of unused model files")
-            }
-        } catch (error: Exception) {
-            // A cleanup failure is recoverable and must not discard a proven engine.
-            Log.w(TAG, "Could not prune unused model files", error)
-        }
+    private suspend fun reclaimOtherBuilds(build: ModelBuild) {
+        runRecoverableCleanup(
+            cleanup = { store.pruneExcept(build) },
+            onSuccess = { reclaimed ->
+                if (reclaimed > 0) {
+                    Log.i(TAG, "Reclaimed ${reclaimed / 1_000_000} MB of unused model files")
+                }
+            },
+            onFailure = { error ->
+                // A cleanup failure is recoverable and must not discard a proven engine.
+                Log.w(TAG, "Could not prune unused model files", error)
+            },
+        )
     }
 
     private fun reportProgress(
@@ -386,5 +389,20 @@ class LiteRtEngine internal constructor(
                 .orEmpty()
                 .any { it.startsWith("libQnnHtp") || it.startsWith("libLiteRtDispatch") }
         }.getOrDefault(false)
+    }
+}
+
+/** Cleanup may fail recoverably, but it must never turn caller cancellation into success. */
+internal suspend fun <T> runRecoverableCleanup(
+    cleanup: suspend () -> T,
+    onSuccess: (T) -> Unit,
+    onFailure: (Exception) -> Unit,
+) {
+    try {
+        onSuccess(cleanup())
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        onFailure(error)
     }
 }

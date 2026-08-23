@@ -99,6 +99,33 @@ is preferred when it matches, because it is both faster and easier on the batter
 the GPU path; otherwise the portable GPU build is used. Every build is pinned to a
 SHA-256 taken from the HuggingFace LFS metadata and verified after download.
 
+## Model acquisition durability
+
+One coroutine-owned transfer coordinator serializes download, deletion, and pruning
+mutations. Cancelling a transfer immediately cancels its active OkHttp call, including a
+blocked connection or body read, then retains every safely written partial byte. A delete
+request cancels the matching transfer, waits for file ownership to be released, and only
+then removes the installed and partial artifacts; concurrent requests cannot write the
+same partial independently.
+
+Pruning is best-effort for ordinary filesystem failures, but never for coroutine
+cancellation. Cancellation while pruning waits for ownership propagates through engine
+preparation, which closes the just-created native engine instead of publishing a cancelled
+load as ready.
+
+Resume requests pin and validate `Content-Range`, accept multiple bounded 206 chunks with
+strict forward progress, recover once from HTTP 416, and cap both response count and total
+bytes. Space checks charge only the bytes still missing plus fixed headroom. Network,
+HTTP/range, storage, incomplete body, checksum, and promotion failures remain separate
+typed causes for later service-level classification. Progress is coalesced to changed
+integer percentages while retaining monotonic initial and terminal states.
+
+A complete partial is SHA-256 verified before promotion. Promotion uses an atomic
+same-volume replacement, so the previous known-good target remains installed until its
+replacement is both complete and verified. Cancellation or out-of-memory during
+verification/promotion preserves the recoverable partial and never converts an
+`OutOfMemoryError` into an ordinary acquisition failure.
+
 ## What is deliberately absent from version one
 
 - No chat UI. LocalLLM is infrastructure; its screen manages the model.
