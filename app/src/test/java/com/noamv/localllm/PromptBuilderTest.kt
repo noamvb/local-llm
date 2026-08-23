@@ -60,6 +60,11 @@ class PromptBuilderTest {
         val system = PromptBuilder.systemInstruction(request(task = InsightTask.NUDGE))
         assertTrue(system.contains("exactly one sentence"))
         assertTrue(system.contains("20 words"))
+
+        val tighter = PromptBuilder.systemInstruction(
+            request(task = InsightTask.NUDGE).copy(maxWords = 7),
+        )
+        assertTrue(tighter.contains("7 words"))
     }
 
     @Test

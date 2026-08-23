@@ -245,6 +245,7 @@ class LiteRtEngine internal constructor(
             lifecycle.use(loader = { loadFirstAvailable { _, _ -> } }) { loaded ->
                 val config = ConversationConfig(
                     systemInstruction = Contents.of(PromptBuilder.systemInstruction(request)),
+                    maxOutputToken = GenerationOutputPolicy.maxOutputTokens(request),
                     // Low temperature and a tight topP keep a small model close to the
                     // supplied facts. Creative sampling is the wrong choice here.
                     samplerConfig = SamplerConfig(topK = 20, topP = 0.9, temperature = 0.25),

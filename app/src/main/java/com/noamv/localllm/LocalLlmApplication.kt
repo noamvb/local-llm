@@ -2,6 +2,7 @@ package com.noamv.localllm
 
 import android.app.Application
 import android.util.Log
+import com.noamv.localllm.engine.InferenceScheduler
 import com.noamv.localllm.engine.LiteRtEngine
 import com.noamv.localllm.engine.LlmEngine
 import com.noamv.localllm.engine.shouldPrewarmOnBind
@@ -26,6 +27,14 @@ import java.util.concurrent.TimeUnit
  */
 class LocalLlmApplication : Application() {
 
+    /**
+     * Scope for work that has to outlive whatever screen or service binding started it.
+     *
+     * It is never cancelled: it is the process, not a component. Component-owned work
+     * still registers cancellation with the process scheduler before it starts.
+     */
+    private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
     private val httpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
             // Model downloads are large; the default ten-second read timeout is far too short.
@@ -42,13 +51,8 @@ class LocalLlmApplication : Application() {
     val engine: LlmEngine
         get() = engineDelegate.value
 
-    /**
-     * Scope for work that has to outlive whatever screen started it.
-     *
-     * It is never cancelled: it is the process, not a component. Nothing here is tied to
-     * a UI lifecycle, so there is nothing to release.
-     */
-    private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    /** One admission owner for every native generation role in this process. */
+    val inferenceScheduler: InferenceScheduler by lazy { InferenceScheduler(applicationScope) }
 
     @Volatile
     private var prepareJob: Job? = null
