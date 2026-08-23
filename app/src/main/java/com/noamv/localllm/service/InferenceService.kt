@@ -15,19 +15,15 @@ import com.noamv.localllm.R
 import com.noamv.localllm.contract.EngineStatus
 import com.noamv.localllm.contract.InsightContract
 import com.noamv.localllm.contract.InsightRequest
+import com.noamv.localllm.contract.InsightTask
 import com.noamv.localllm.contract.LocalLlmError
+import com.noamv.localllm.engine.GenerationOutputPolicy
+import com.noamv.localllm.engine.InferencePriority
+import com.noamv.localllm.engine.InferenceQueueState
+import com.noamv.localllm.engine.InferenceScheduler
 import com.noamv.localllm.engine.LlmEngine
 import com.noamv.localllm.security.CallerAuthorizer
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.plus
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -40,12 +36,15 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class InferenceService : Service() {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val inFlight = ConcurrentHashMap<String, InFlightRequest>()
+    private val serviceStateLock = Any()
+    private var acceptingRequests = true
     private lateinit var callerAuthorizer: CallerAuthorizer
 
     private val engine: LlmEngine
         get() = (application as LocalLlmApplication).engine
+    private val scheduler: InferenceScheduler
+        get() = (application as LocalLlmApplication).inferenceScheduler
 
     override fun onCreate() {
         super.onCreate()
@@ -58,7 +57,11 @@ class InferenceService : Service() {
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onDestroy() {
-        scope.cancel()
+        val toCancel = synchronized(serviceStateLock) {
+            acceptingRequests = false
+            inFlight.values.toList()
+        }
+        toCancel.forEach { it.cancel() }
         super.onDestroy()
     }
 
@@ -84,10 +87,18 @@ class InferenceService : Service() {
             val callerUid = enforceCaller()
             val requestId = UUID.randomUUID().toString()
 
+            V1RequestValidator.rawErrorMessage(requestJson)?.let { validationError ->
+                callback.safeError(requestId, LocalLlmError.INVALID_REQUEST, validationError)
+                return requestId
+            }
             val request = try {
                 InsightContract.json.decodeFromString(InsightRequest.serializer(), requestJson)
-            } catch (error: Exception) {
-                callback.safeError(requestId, LocalLlmError.INVALID_REQUEST, error.message.orEmpty())
+            } catch (_: Exception) {
+                callback.safeError(
+                    requestId,
+                    LocalLlmError.INVALID_REQUEST,
+                    "Request JSON is malformed or uses an unknown contract v1 value.",
+                )
                 return requestId
             }
 
@@ -100,57 +111,82 @@ class InferenceService : Service() {
                 return requestId
             }
 
-            val callbackBinder = callback.asBinder()
-            val job = scope.launch(start = CoroutineStart.LAZY) {
-                val builder = StringBuilder()
-                try {
-                    engine.prepare { percent, stage ->
-                        if (!callback.safeProgress(requestId, percent, stage)) {
-                            throw CancellationException("Client callback is unavailable")
-                        }
-                    }
-                    engine.generate(request)
-                        .catch { error -> throw error }
-                        .collect { fragment ->
-                            builder.append(fragment)
-                            if (request.stream && !callback.safeToken(requestId, fragment)) {
-                                throw CancellationException("Client callback is unavailable")
-                            }
-                        }
-                    callback.safeComplete(requestId, builder.toString().trim(), null)
-                } catch (cancelled: CancellationException) {
-                    callback.safeError(requestId, LocalLlmError.CANCELLED, "Cancelled")
-                    throw cancelled
-                } catch (oom: OutOfMemoryError) {
-                    Log.e(TAG, "Out of memory during generation", oom)
-                    callback.safeError(requestId, LocalLlmError.OUT_OF_MEMORY, "Out of memory")
-                } catch (error: Throwable) {
-                    Log.e(TAG, "Generation failed", error)
-                    callback.safeError(requestId, LocalLlmError.INTERNAL, error.message.orEmpty())
-                }
-            }
-            lateinit var record: InFlightRequest
-            val deathRecipient = IBinder.DeathRecipient {
-                inFlight[requestId]
-                    ?.takeIf { it === record }
-                    ?.job
-                    ?.cancel(CancellationException("Client callback Binder died"))
-            }
-            record = InFlightRequest(callerUid, job, callbackBinder, deathRecipient)
-            job.invokeOnCompletion {
-                inFlight.remove(requestId, record)
-                runCatching { record.callbackBinder.unlinkToDeath(record.deathRecipient, 0) }
-            }
-            inFlight[requestId] = record
-            try {
-                record.callbackBinder.linkToDeath(record.deathRecipient, 0)
-                if (!record.callbackBinder.isBinderAlive) {
-                    job.cancel(CancellationException("Client callback Binder is already dead"))
+            val callbackGate = ServiceCallbackGate(
+                deliverToken = { fragment -> callback.safeToken(requestId, fragment) },
+                deliverProgress = { percent, stage ->
+                    callback.safeProgress(requestId, percent, stage)
+                },
+                deliverComplete = { text -> callback.safeComplete(requestId, text, null) },
+                deliverError = { code, message -> callback.safeError(requestId, code, message) },
+            )
+            val record = InFlightRequest(
+                requestId = requestId,
+                callerUid = callerUid,
+                callbackGate = callbackGate,
+                callbackBinder = callback.asBinder(),
+            )
+            val registered = synchronized(serviceStateLock) {
+                if (!acceptingRequests) {
+                    false
                 } else {
-                    job.start()
+                    check(inFlight.putIfAbsent(requestId, record) == null) {
+                        "Generated a duplicate inference request ID"
+                    }
+                    true
                 }
-            } catch (_: RemoteException) {
-                job.cancel(CancellationException("Client callback Binder is already dead"))
+            }
+            if (!registered) {
+                callbackGate.error(
+                    LocalLlmError.BUSY,
+                    "Inference is shutting down. Retry later.",
+                )
+                return requestId
+            }
+
+            if (!record.linkCallbackDeath()) {
+                callbackGate.error(LocalLlmError.CANCELLED, "Client callback is unavailable.")
+                record.finish()
+                return requestId
+            }
+
+            val registration = try {
+                record.register(
+                    priority = v1Priority(request),
+                    work = { runGeneration(record, request) },
+                )
+            } catch (error: Throwable) {
+                val failure = ServiceFailureMapper.map(error)
+                if (failure.code == LocalLlmError.OUT_OF_MEMORY) {
+                    Log.e(TAG, "Inference admission failed after memory exhaustion")
+                } else {
+                    Log.e(
+                        TAG,
+                        "Inference admission failed: code=${failure.code} " +
+                            "retryable=${failure.retryable}",
+                        error,
+                    )
+                }
+                callbackGate.error(failure.code, failure.message)
+                record.finish()
+                return requestId
+            }
+            when (registration) {
+                is RegistrationResult.Admitted -> Unit
+                RegistrationResult.Busy -> {
+                    callbackGate.error(
+                        LocalLlmError.BUSY,
+                        "Inference is busy: one request is active and two are waiting.",
+                    )
+                    record.finish()
+                }
+                RegistrationResult.Closed -> {
+                    callbackGate.error(LocalLlmError.BUSY, "Inference is shutting down. Retry later.")
+                    record.finish()
+                }
+                RegistrationResult.CancelledBeforeAdmission -> {
+                    callbackGate.error(LocalLlmError.CANCELLED, "Request cancelled.")
+                    record.finish()
+                }
             }
             return requestId
         }
@@ -161,7 +197,41 @@ class InferenceService : Service() {
             if (request.callerUid != callerUid) {
                 throw SecurityException("A client cannot cancel another client's request")
             }
-            request.job.cancel()
+            request.cancel()
+        }
+    }
+
+    private suspend fun runGeneration(record: InFlightRequest, request: InsightRequest) {
+        val builder = StringBuilder()
+        try {
+            engine.prepare { percent, stage ->
+                if (!record.callbackGate.progress(percent, stage)) record.cancel()
+            }
+            engine.generate(request).collect { fragment ->
+                GenerationOutputPolicy.append(builder, fragment)
+                if (request.stream && !record.callbackGate.token(fragment)) {
+                    throw CancellationException("Client callback is unavailable")
+                }
+            }
+            val completed = GenerationOutputPolicy.validatedTerminalText(request, builder.toString())
+            record.callbackGate.complete(completed)
+        } catch (cancelled: CancellationException) {
+            val failure = ServiceFailureMapper.map(cancelled)
+            record.callbackGate.error(failure.code, failure.message)
+            throw cancelled
+        } catch (error: Throwable) {
+            val failure = ServiceFailureMapper.map(error)
+            if (failure.code == LocalLlmError.OUT_OF_MEMORY) {
+                Log.e(TAG, "Inference request failed after native memory exhaustion")
+            } else {
+                Log.e(
+                    TAG,
+                    "Inference request failed: code=${failure.code} retryable=${failure.retryable}",
+                    error,
+                )
+            }
+            record.callbackGate.error(failure.code, failure.message)
+            throw error
         }
     }
 
@@ -183,21 +253,119 @@ class InferenceService : Service() {
     private fun <T> Result<T>.callbackDelivered(): Boolean = fold(
         onSuccess = { true },
         onFailure = { error ->
-            if (error is RemoteException) {
-                Log.d(TAG, "Client went away", error)
-                false
-            } else {
-                throw error
-            }
+            Log.d(TAG, "Client callback is unavailable", error)
+            false
         },
     )
 
-    private data class InFlightRequest(
+    private inner class InFlightRequest(
+        val requestId: String,
         val callerUid: Int,
-        val job: Job,
+        val callbackGate: ServiceCallbackGate,
         val callbackBinder: IBinder,
-        val deathRecipient: IBinder.DeathRecipient,
-    )
+    ) {
+        private val lifecycle = RequestLifecycleGate(requestId, scheduler::cancel)
+        private val deathLinkLock = Any()
+        private var deathLinked = false
+        private val deathRecipient = IBinder.DeathRecipient {
+            inFlight[requestId]
+                ?.takeIf { it === this@InFlightRequest }
+                ?.cancel()
+        }
+
+        fun linkCallbackDeath(): Boolean {
+            return try {
+                callbackBinder.linkToDeath(deathRecipient, 0)
+                synchronized(deathLinkLock) { deathLinked = true }
+                if (callbackBinder.isBinderAlive) {
+                    true
+                } else {
+                    cancel()
+                    false
+                }
+            } catch (_: RemoteException) {
+                cancel()
+                false
+            }
+        }
+
+        fun register(
+            priority: InferencePriority,
+            work: suspend () -> Unit,
+        ): RegistrationResult = lifecycle.register {
+            scheduler.submit(
+                requestId = requestId,
+                priority = priority,
+                onState = ::handleQueueState,
+                block = work,
+            )
+        }
+
+        fun cancel(): Boolean {
+            // Terminal callback ownership is the cancellation linearization point. If
+            // completion already won, this becomes best-effort native cancellation only;
+            // otherwise cancellation becomes the sole terminal result before the work is
+            // removed from the queue or interrupted.
+            return lifecycle.cancel {
+                callbackGate.error(LocalLlmError.CANCELLED, "Request cancelled.")
+            }
+        }
+
+        fun finish() {
+            if (!lifecycle.terminal()) return
+            inFlight.remove(requestId, this)
+            val unlink = synchronized(deathLinkLock) {
+                if (deathLinked) {
+                    deathLinked = false
+                    true
+                } else {
+                    false
+                }
+            }
+            if (unlink) runCatching { callbackBinder.unlinkToDeath(deathRecipient, 0) }
+        }
+
+        private fun handleQueueState(state: InferenceQueueState) {
+            when (state) {
+                InferenceQueueState.QUEUED -> {
+                    if (!callbackGate.progress(-1, STAGE_QUEUED)) cancel()
+                }
+                // ACTIVE may be published synchronously inside scheduler registration.
+                // Do not invoke a client callback there: the lazy work must be the first
+                // externally cancellable action after registration has linearized.
+                InferenceQueueState.ACTIVE -> Unit
+                InferenceQueueState.COMPLETED -> {
+                    if (!callbackGate.isTerminal) {
+                        callbackGate.error(
+                            LocalLlmError.INTERNAL,
+                            "Inference ended without a terminal result.",
+                        )
+                    }
+                    finish()
+                }
+                InferenceQueueState.FAILED -> {
+                    if (!callbackGate.isTerminal) {
+                        callbackGate.error(
+                            LocalLlmError.INTERNAL,
+                            "Local inference failed unexpectedly.",
+                        )
+                    }
+                    finish()
+                }
+                InferenceQueueState.CANCELLED -> {
+                    callbackGate.error(LocalLlmError.CANCELLED, "Request cancelled.")
+                    finish()
+                }
+                InferenceQueueState.EXPIRED -> {
+                    callbackGate.error(
+                        LocalLlmError.BUSY,
+                        "Inference queue wait expired. Retry later.",
+                    )
+                    finish()
+                }
+            }
+        }
+    }
 
     /**
      * Deliberately NOT promoted to the foreground while serving a bound request.
@@ -232,8 +400,20 @@ class InferenceService : Service() {
     companion object {
         private const val TAG = "InferenceService"
         private const val CHANNEL_ID = "engine"
-        private const val NOTIFICATION_ID = 1001
+        private const val STAGE_QUEUED = "queued"
     }
+}
+
+/**
+ * Contract v1 has no execution-context or priority field. Treat every valid v1 request as
+ * an open-screen turn; deriving priority from clientId, task, or personal content would be
+ * both spoofable and semantically wrong. Future contracts may opt into the other lanes.
+ */
+internal fun v1Priority(request: InsightRequest): InferencePriority = when (request.task) {
+    InsightTask.PERIOD_SUMMARY,
+    InsightTask.NUDGE,
+    InsightTask.PERIOD_COMPARISON,
+    -> InferencePriority.OPEN_SCREEN
 }
 
 /** Orders optional expensive work strictly after exact Binder-caller authorization. */

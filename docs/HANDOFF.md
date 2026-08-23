@@ -92,6 +92,63 @@ copies and their append-style collectors are intentionally not changed in this b
 they can vendor the canonical client without changing their append behavior in coordinated
 follow-up PRs, while new UI should consume the typed event API.
 
+## Unreleased Stage 1 service reliability
+
+Branch `codex/localllm-v1-service-reliability`, based on exact-green security main
+`4e588cbde0a5447dd1785819b8c9488639a4eead`, integrates the scheduler into both Binder
+generation and the manager self-test. One process-owned scheduler admits one active request
+and at most two waiting requests. Waiting work is priority-ordered and FIFO within a lane,
+expires after 120 seconds, and is removed on explicit cancellation, callback Binder death or
+owner cancellation. Native work is deliberately not pre-empted. Because contract v1 has no
+trusted execution-context field, every v1 task maps deterministically to `OPEN_SCREEN`;
+`LIVE_ASSISTANT` and `BACKGROUND` remain reserved for a future contract.
+
+Requests are registered before their lazy jobs start. A service-lifetime gate coordinates
+synchronous admission with callback death, cancellation and terminal cleanup, while one
+callback gate serializes progress/token delivery with the sole completion or failure. Service
+destruction fences new registrations and cancels only that service instance's records; it does
+not close the process scheduler. The manager self-test uses the same admission boundary, reports
+busy/expiry/failure states without mixing replacement runs, and cannot bypass already-admitted
+Binder generation.
+
+Contract v1 validation now happens before scheduler or engine entry. Raw JSON is capped at
+32 KiB UTF-8; version, known task, client ID, nonblank bounded strings, UTF-8 sizes, control and
+invisible characters, fact counts, strict real ISO dates, date ordering and `maxWords` are
+checked. Summary and nudge require a period and facts, comparison requires both periods and fact
+sets, comparison-only fields are rejected elsewhere, and nudge requires
+`lockScreenSafe=true`. Every non-null `resultSchema` is still rejected. The documented v1
+compatibility opt-outs `forbidHealthClaims=false` and `forbidNewNumbers=false` remain accepted;
+this service does not silently reinterpret those client choices.
+
+LiteRT receives a request-derived `maxOutputToken` with an unconditional 256-token ceiling.
+Assembled terminal text is separately capped at 8192 UTF-16 characters, rejected when blank,
+and checked against the request's actual word limit; nudge remains tighter at 20 words. Model
+acquisition, network, download protocol, checksum, storage, initialization, unsupported-backend,
+out-of-memory, cancellation, busy and internal failures are mapped to the seven frozen v1 codes
+with sanitized category-specific guidance. Retryability is retained for diagnostics and prose
+only because v1 has no retryable wire field; no AIDL transaction, signature or error-code value
+changed.
+
+The final isolated JDK 17 command was
+`./gradlew --no-daemon --rerun-tasks clean testDebugUnitTest assembleDebug lintDebug
+-Pkotlin.compiler.execution.strategy=in-process`, with
+`GRADLE_USER_HOME=/private/tmp/localllm-roadmap-20260823.pO7j0d/gradle-service-reliability`.
+It completed 100 Gradle tasks successfully in 5 minutes 42 seconds. All 181 JVM tests passed
+(136 app and 45 client; zero failures, errors or skips), both debug artifacts assembled, app
+lint completed with 24 warnings and no errors, and client lint reported no issues. The focused
+service-reliability gate passed 54 scheduler, lifecycle-race, callback-arbitration, validation,
+output-policy, prompt, failure-mapping, authorization and manager-self-test cases. Final
+`git diff --check` and frozen-contract drift checks passed, and
+`bash scripts/localllm_v1_client.sh check-local` retained canonical digest
+`fafc994962f895399bdf2e2702255a31388236726847660e41f1a161aaa38f4b`.
+
+This remains static/JVM evidence. No Android instrumentation, emulator, physical-device,
+cross-process Binder-death timing, real LiteRT generation, real model acquisition, OOM, trim or
+native-cancellation scenario was exercised. LiteRT cancellation remains cooperative at the
+coroutine boundary rather than native pre-emption. The 256-token parameter is compilation- and
+unit-verified against LiteRT 0.16.1 but has not been measured with a device model. This branch has
+not been pushed, merged, released, installed or used to download a model.
+
 ## Where everything stands
 
 | Repository | Released | State |

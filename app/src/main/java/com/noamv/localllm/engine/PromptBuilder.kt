@@ -37,11 +37,20 @@ object PromptBuilder {
 
         when (request.task) {
             InsightTask.PERIOD_SUMMARY ->
-                append("Write flowing prose of at most ${request.maxWords} words. No lists, no headings. ")
+                append(
+                    "Write flowing prose of at most ${GenerationOutputPolicy.wordLimit(request)} words. " +
+                        "No lists, no headings. ",
+                )
             InsightTask.NUDGE ->
-                append("Write exactly one sentence of at most 20 words. No greeting, no emoji. ")
+                append(
+                    "Write exactly one sentence of at most " +
+                        "${GenerationOutputPolicy.wordLimit(request)} words. No greeting, no emoji. ",
+                )
             InsightTask.PERIOD_COMPARISON ->
-                append("Compare the two periods in at most ${request.maxWords} words. ")
+                append(
+                    "Compare the two periods in at most " +
+                        "${GenerationOutputPolicy.wordLimit(request)} words. ",
+                )
                     .also { append("Only state a difference if the given facts show one. ") }
         }
 

@@ -68,11 +68,37 @@ user's locale and the app's conventions.
 
 ### Tasks
 
-| Task | Output | Use |
-| --- | --- | --- |
-| `PERIOD_SUMMARY` | prose, up to `maxWords` | the insight card |
-| `NUDGE` | one sentence, ≤ 20 words | a notification |
-| `PERIOD_COMPARISON` | prose comparing two fact sets | period-over-period cards |
+| Task | Required input | Output | Use |
+| --- | --- | --- | --- |
+| `PERIOD_SUMMARY` | one period and at least one fact | prose, up to `maxWords` | the insight card |
+| `NUDGE` | one period, at least one fact and `lockScreenSafe=true` | one sentence, ≤ `min(maxWords, 20)` words | a notification |
+| `PERIOD_COMPARISON` | two periods, each with at least one fact | prose comparing two fact sets | period-over-period cards |
+
+Summary and nudge requests reject comparison-only fields. Comparison requests require
+both period objects and both fact sets rather than silently changing task semantics.
+
+### Service-owned v1 bounds
+
+Validation completes before model preparation or scheduler admission. Limits count Unicode
+code points and UTF-8 bytes separately:
+
+| Value | Limit |
+| --- | --- |
+| complete request JSON | 32,768 UTF-8 bytes |
+| `clientId` | 64 code points / 128 bytes; starts with a lowercase letter or digit, then uses lowercase letters, digits, `.`, `_`, `-` |
+| `subject` | 256 code points / 1,024 bytes |
+| period label | 128 code points / 512 bytes |
+| facts | 64 per period and 96 across the request |
+| fact label | 128 code points / 512 bytes |
+| fact value or note | 256 code points / 1,024 bytes |
+| `maxWords` | 1–120 |
+
+Required strings are nonblank, have no surrounding whitespace, and reject ISO control,
+invisible format, line/paragraph separator and malformed surrogate characters. Period dates must be
+provided as a pair of real `YYYY-MM-DD` dates with start no later than end. Unknown task
+enum values fail JSON decoding. When both comparison ranges carry dates, the comparison
+range must end before the current range starts. These are service limits, not permission checks;
+`clientId` remains descriptive and never grants authority or priority.
 
 ## Safety policy
 
@@ -84,9 +110,21 @@ user's locale and the app's conventions.
 - `forbidNewNumbers` — the model may use only the numbers it was given.
 - `lockScreenSafe` — no product names, quantities or dates in the output.
 
-`lockScreenSafe` exists specifically for `NUDGE`. Cannsheet's own convention keeps
-product names, quantities and dates out of notification content; a nudge request from
-Cannsheet should set this flag so a generated line cannot undo that decision.
+`lockScreenSafe` exists specifically for `NUDGE`. Because v1 defines that task as
+notification output, the service now requires the flag for every `NUDGE`; a request that
+does not opt into that restriction fails with `INVALID_REQUEST` before engine work.
+
+The two other booleans remain deliberate v1 opt-outs for compatibility with the frozen
+documented contract. Current health-adjacent clients use their strict defaults. A future
+contract that removes the opt-outs needs an explicit versioned compatibility decision.
+
+## Output limits
+
+Prompt wording is not the output boundary. LiteRT-LM receives a request-sensitive
+`maxOutputToken` with an absolute ceiling of 256 output tokens. The service independently
+assembles at most 8,192 characters and validates the terminal text is nonblank and no
+longer than the task's actual word limit. A violation is terminal `INTERNAL`; streamed
+draft fragments are advisory and never turn an invalid terminal value into success.
 
 ### Structured output
 
@@ -118,6 +156,27 @@ engine work. The service begins non-downloading prewarm only after the caller pa
 exact package-and-lineage check on `getApiVersion()`; an authorized generation request
 also prepares on demand. This prevents another package signed with a broadly known client
 certificate from using bind/unbind cycles to force multi-gigabyte model initialization.
+
+## Service scheduling and cancellation
+
+The process admits at most one active generation and two waiting requests, including the
+manager's local self-test. A further service request receives terminal `BUSY` without
+starting model work. Waiting work is ordered by
+priority then FIFO, never pre-empts active native inference, expires after a bounded wait,
+and is removed synchronously when its caller cancels or its callback Binder dies.
+
+Contract v1 has no execution-context or priority field. Every v1 task therefore maps
+deterministically to the `OPEN_SCREEN` lane; the service does not infer priority from
+`clientId`, task names or personal content. The `LIVE_ASSISTANT` and `BACKGROUND` lanes
+are reserved for a future contract that can state trusted execution context explicitly.
+
+The in-flight owner and callback death recipient are registered before scheduler
+submission. One registration monitor orders cancellation/death immediately before or
+during synchronous scheduler admission: cancellation either prevents submission, or
+cancels the exact admitted entry. A separate callback monitor admits progress/tokens and
+the sole terminal completion/failure, so no nonterminal callback follows a terminal one.
+Completed, failed, expired and cancelled entries release both scheduler and Binder-death
+registration ownership exactly once.
 
 ## Client delivery and deadlines
 
@@ -181,15 +240,19 @@ copied files.
 
 ## Errors
 
-| Code | Meaning |
-| --- | --- |
-| 1 | `BUSY` |
-| 2 | `MODEL_NOT_READY` |
-| 3 | `CANCELLED` |
-| 4 | `INVALID_REQUEST` |
-| 5 | `OUT_OF_MEMORY` |
-| 6 | `UNSUPPORTED_DEVICE` |
-| 7 | `INTERNAL` |
+| Code | Meaning | Service categories and retry guidance |
+| --- | --- | --- |
+| 1 | `BUSY` | queue full, queue wait expired, or service closing; retry later |
+| 2 | `MODEL_NOT_READY` | distinct sanitized network, download-protocol, storage, checksum, acquisition or initialization messages; retry after the stated connectivity, storage or repair condition |
+| 3 | `CANCELLED` | caller cancellation, callback death or service shutdown; a caller may start a new request |
+| 4 | `INVALID_REQUEST` | malformed, unsupported, unsafe task shape or over-limit input; fix the request |
+| 5 | `OUT_OF_MEMORY` | native allocation failed and the lifecycle owner released the engine; retry after memory pressure falls |
+| 6 | `UNSUPPORTED_DEVICE` | all compatible native backends were exhausted; do not loop automatically |
+| 7 | `INTERNAL` | unexpected engine/service failure or invalid terminal output; retry is caller policy |
+
+Version one has no retryable field and cannot add one without changing the copied
+contract. The stable code plus sanitized category message are the available v1 signal;
+internal paths, URLs, digests and exception text are never returned to the client.
 
 A typed-event client handles these as terminal `Failure` events; the deprecated string
 adapter rethrows their `error`. The service process can still be killed under memory

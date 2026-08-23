@@ -93,6 +93,15 @@ contiguous allocation. Two decisions follow:
   generation, unload, close and critical trim. A trim request waits for active native
   inference to finish before closing the handle; it never races `Engine.initialize()` or
   `Engine.close()` against generation.
+- A process-owned scheduler bounds admission before that coordinator: one generation is
+  active and at most two wait, across both Binder requests and the manager self-test.
+  Priority affects only waiting order and never pre-empts a native call. Current v1
+  requests all use the deterministic open-screen lane because the frozen request has no
+  trusted execution-context field.
+- Each callback Binder and in-flight record exists before scheduler submission.
+  Cancellation or Binder death before/during synchronous registration either prevents
+  admission or removes the admitted entry; terminal scheduler state releases that record
+  and its death recipient exactly once.
 - `onTrimMemory(TRIM_MEMORY_RUNNING_CRITICAL)` cancels process-owned preparation while
   preserving any resumable partial download, then schedules a coordinated unload. Paying
   a reload is better than having the process killed mid-generation.
@@ -105,7 +114,9 @@ a network, storage or checksum problem cannot become a permanent unsupported-dev
 or trigger another fallback download.
 
 A fresh `Conversation` is created per request. Conversations are cheap and this keeps
-state from leaking between the two client apps.
+state from leaking between the two client apps. Its LiteRT configuration has a hard
+service-owned output-token ceiling, followed by terminal word-count validation; prompt
+instructions are not treated as enforcement.
 
 ## Why there is no foreground service
 

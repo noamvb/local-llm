@@ -2,6 +2,43 @@
 
 Durable choices and the evidence behind them. Newest first.
 
+## 2026-08-23 — Bound v1 service work before native inference
+
+**Decision.** Put every cross-app v1 generation and the manager self-test through one
+process-owned bounded priority scheduler: one active request and at most two waiting.
+Register the in-flight owner and callback
+Binder death recipient before synchronous admission. Linearize cancellation/death with
+registration, keep one callback terminal owner, remove waiting work immediately, expire
+stale queued work, and return explicit `BUSY` when capacity is exhausted. Native work is
+not pre-empted. Because the frozen v1 JSON has no trustworthy execution-context field,
+all v1 tasks use the open-screen priority; live-assistant/background priority remains
+available only to a future explicit contract.
+
+Validate the complete raw and decoded request before admission: exact contract/task
+shape, nonblank bounded strings and UTF-8 bytes, fact counts and fields, strict date
+pairs/ranges, word limits, control/format characters, and reserved structured output.
+`PERIOD_SUMMARY` and `NUDGE` require a period; `NUDGE` also requires
+`lockScreenSafe=true`. The documented v1 health/new-number opt-outs remain accepted for
+compatibility, while current clients retain strict defaults.
+
+Set LiteRT-LM's request-sensitive `maxOutputToken` with a hard ceiling, then separately
+bound accumulated characters and validate nonblank terminal word count. Map cancellation,
+OOM, exhausted backends, acquisition subcategories, initialization, queue saturation,
+invalid input and unexpected failures to the existing seven v1 codes with sanitized
+category messages. V1 has no retryable bit, so adding one waits for a versioned contract.
+
+**Why.** Serializing only inside the native engine allowed unbounded Binder coroutines to
+wait while retaining callback and personal-fact payloads. Prompt-only limits did not stop
+oversized input or overlong output, and a catch-all `INTERNAL` response erased actionable
+model acquisition and backend distinctions. Inferring priority from `clientId`, task or
+content would let descriptive, spoofable data become scheduling authority.
+
+**Consequences.** The existing engine lifecycle coordinator remains the sole native
+handle owner; prepare, generation, trim, unload and OOM recovery are not duplicated.
+Queue priority changes waiting order only. The AIDL transaction layout and copied JSON
+shape remain unchanged. Retryability is necessarily advisory at v1, and physical LiteRT,
+Binder-death and memory-pressure behavior still require device validation.
+
 ## 2026-08-23 — Serialize model-file ownership and make resume protocol-strict
 
 **Decision.** Give one coroutine-owned coordinator exclusive access to model transfers,
