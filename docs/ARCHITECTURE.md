@@ -1,5 +1,10 @@
 # Architecture
 
+This document describes the shipped version-one summary host. The accepted, staged
+version-two private-assistant target is specified separately in
+`ASSISTANT_ARCHITECTURE.md`; its interfaces, history, providers, and UI must not be treated
+as implemented until their feature and release gates complete.
+
 ## Processes
 
 ```
@@ -82,7 +87,7 @@ is preferred when it matches, because it is both faster and easier on the batter
 the GPU path; otherwise the portable GPU build is used. Every build is pinned to a
 SHA-256 taken from the HuggingFace LFS metadata and verified after download.
 
-## What is deliberately absent
+## What is deliberately absent from version one
 
 - No chat UI. LocalLLM is infrastructure; its screen manages the model.
 - No analytics computation. Clients compute their own statistics.

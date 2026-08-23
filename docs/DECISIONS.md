@@ -2,6 +2,118 @@
 
 Durable choices and the evidence behind them. Newest first.
 
+## 2026-08-23 — Authenticate every Binder peer by package and signing lineage
+
+**Decision.** Keep Android's signature-gated permissions as defense in depth, and add
+reciprocal runtime identity checks. A client verifies the exact LocalLLM component and an
+approved current signer or signing lineage before any bind. LocalLLM derives the caller
+from `Binder.getCallingUid()` and accepts only an approved package-plus-signing-lineage
+pair among the packages Android reports for that UID. Caller-provided `clientId` values
+remain descriptive metadata and never grant access, priority, quota, or attribution.
+
+**Why.** The current outbound client trusts only a package name, while the inbound
+permission intentionally recognizes multiple certificates. That is broad enough for an
+approved signer to claim another client's `clientId`, and a wrong same-package LocalLLM
+installation could receive facts from a client that checks only the package name.
+
+**Consequences.** Expected SHA-256 values come from independently verified published APKs
+and release workflows pin them explicitly. Package replacement and signer mismatch make
+the peer unavailable before facts are read or transmitted. The version-one AIDL layout is
+preserved while signer checks, same-session version negotiation, finite timeouts, and
+Binder-death handling are added to its implementation.
+
+## 2026-08-23 — Add a separate aggregate-only version-two assistant protocol
+
+**Decision.** Add new version-two assistant and fact-provider Binder interfaces beside the
+existing version-one summary interface. Client providers accept only a bounded typed
+aggregate-query grammar and return evidence-bearing facts calculated by the owning app.
+There is no raw-row or arbitrary-expression escape hatch and no write-shaped operation.
+
+**Why.** Expanding the version-one transaction layout would destabilize already installed
+clients. An assistant needs capabilities, clarification, provider queries, citations,
+terminal validation, history pagination, and partial-source states that do not fit the
+one-shot summary API. Keeping providers aggregate-only preserves both the data boundary
+and the rule that the model never calculates.
+
+**Consequences.** The production grammar freezes only after deterministic-parser and
+FunctionGemma feasibility tests exercise the same proposed shapes. Providers implement
+the frozen contract rather than inventing fields locally. Unknown JSON fields remain
+forward-compatible; unknown enum values are explicit `UNKNOWN` values or an incompatible
+peer error. See `ASSISTANT_ARCHITECTURE.md`.
+
+## 2026-08-23 — LocalLLM alone owns device-only shared assistant history
+
+**Decision.** LocalLLM persists multiple conversations, cited evidence, provenance,
+terminal results, and a separate automatic-insights feed in its own Room database. Both
+approved clients may read the complete bounded archive, but only LocalLLM's owner UI may
+delete a conversation or clear history. History has no backup, transfer, cloud, sharing,
+or export path and remains until manual deletion.
+
+**Why.** One history owner gives both clients an identical archive without duplicating
+sensitive text and deletion state. Client-owned copies would drift and make it unclear
+which app controls retention.
+
+**Consequences.** Question, cited evidence, terminal text, warning, and terminal state are
+one atomic transaction. Cancellation or timeout cannot become success. Validated prose is
+never evidence for a later turn; follow-ups re-fetch current facts. Failed generated text
+is intentionally retained only as escaped inert text behind a prominent warning and is
+excluded from answers, evidence, future context, navigation, cards, notifications, and
+actions.
+
+## 2026-08-23 — Cross-app answers require explicit permission and stay side by side
+
+**Decision.** A normal turn is restricted to the initiating app. LocalLLM may query both
+providers only after deterministic source selection confirms explicit wording or an
+explicit owner choice. Facts from the two apps remain separately labelled, and the writer
+cannot claim correlation, causation, medical meaning, or behavioral effect.
+
+**Why.** Router output is not authorization, and combining health-adjacent and consumption
+data can create both an unexpected privacy expansion and unsupported conclusions.
+
+**Consequences.** An ambiguous source prompts clarification. A missing explicitly requested
+provider yields current available facts plus a deterministic missing-source warning, never
+saved historical evidence. Single-app conformance tests prove the other provider is not
+bound. Every validated sentence cites current supplied fact IDs and every number is
+grounded in that sentence's cited facts.
+
+## 2026-08-23 — Separate router and writer roles with a deterministic shipping fallback
+
+**Decision.** Treat FunctionGemma as an optional, tuned English router and the existing
+Gemma E2B model as the writer. The router may propose the typed aggregate grammar but may
+not execute it. Deterministic parsing, validation, intent choices, and clarification are
+the required shipping fallback if FunctionGemma misses any accuracy, safety, licensing,
+artifact, latency, memory, or thermal gate.
+
+**Why.** Function routing and prose writing have different failure modes. A small router
+can reduce ambiguity only if it is evaluated against the exact function vocabulary; it is
+not authority and it is not a general assistant. Making the Android feature depend on an
+unproven tuned artifact would block safe delivery.
+
+**Consequences.** Model storage, preparation, status, and rollback become role-aware. The
+initial runtime keeps one role resident and schedules one native inference at a time.
+Simultaneous residency remains disabled until intended-phone evidence proves it safe.
+Training/evaluation inputs are synthetic and reproducible; saved owner questions stay on
+device as private evaluation only and never become training data.
+
+## 2026-08-23 — Clients own automatic insight execution and notifications stay neutral
+
+**Decision.** Cannsheet and Poop Schedule each own one daily post-fresh-sync WorkManager
+job. Fixed activity-only highlights and current-30-versus-prior-30 comparisons bypass the
+router, use the source's authoritative timezone, and save into a separate LocalLLM feed.
+Public success and failure notifications contain neutral fixed text and no generated
+prose or personal fact.
+
+**Why.** Android foreground-execution eligibility belongs to the background caller, not a
+bound LocalLLM service. Fixed scheduled queries gain nothing from probabilistic routing,
+and lock-screen notification content must not disclose values, products, symptoms, dates,
+or inactivity.
+
+**Consequences.** Eligibility and idempotency are client-owned and tested. Missing models,
+disabled access, stale data, blocked notifications, or battery restrictions skip
+inference without repeated alerts. Releases remain staged: LocalLLM first, then compatible
+clients; publication does not authorize production installation, launch, data access, or
+device actions.
+
 ## 2026-08-19 — Split time-to-first-token telemetry and track download status
 
 **Decision.** `EngineTimings` records both total time-to-first-token (`lastTimeToFirstTokenMillis`) and the post-preparation prefill segment (`lastPrefillMillis`), alongside a flag indicating whether the request triggered a model download (`lastRequestDownloaded`). Logcat and the manager screen distinguish pure prefill latency from download and model initialisation overhead.
