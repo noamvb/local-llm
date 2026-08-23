@@ -4,6 +4,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.os.Binder
 import android.os.IBinder
 import android.os.RemoteException
 import android.util.Log
@@ -16,56 +17,45 @@ import com.noamv.localllm.contract.InsightContract
 import com.noamv.localllm.contract.InsightRequest
 import com.noamv.localllm.contract.LocalLlmError
 import com.noamv.localllm.engine.LlmEngine
+import com.noamv.localllm.security.CallerAuthorizer
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.plus
-import kotlinx.coroutines.Dispatchers
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 /**
  * The bound service that client apps talk to.
  *
- * Access is gated by the signature-level permission declared in the manifest, so the
- * binder itself performs no additional caller checks: an app that is not signed with the
- * same certificate cannot bind at all.
- *
- * The service promotes itself to the foreground while work is in flight. Without that, a
- * generation started by a backgrounded client is liable to be killed part-way through,
- * and the client sees a stream that simply stops.
+ * The manifest permission is the first gate. Every Binder method also authenticates the
+ * calling UID against an exact approved package-and-signing-lineage pair; request.clientId
+ * is descriptive data and is never an authority signal.
  */
 class InferenceService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private val inFlight = ConcurrentHashMap<String, Job>()
+    private val inFlight = ConcurrentHashMap<String, InFlightRequest>()
+    private lateinit var callerAuthorizer: CallerAuthorizer
 
     private val engine: LlmEngine
         get() = (application as LocalLlmApplication).engine
 
     override fun onCreate() {
         super.onCreate()
+        callerAuthorizer = CallerAuthorizer(this)
         createNotificationChannel()
     }
 
-    override fun onBind(intent: Intent?): IBinder {
-        (application as LocalLlmApplication).prewarmModel()
-        return binder
-    }
-
-    // Returning true tells Android to call onRebind if a client binds to an already-running
-    // instance. In a bind-only configuration this service is destroyed when the last client
-    // unbinds so onRebind is not expected to fire today, but the override is kept as defense
-    // against any future started-service lifecycle.
-    override fun onUnbind(intent: Intent?): Boolean = true
-
-    override fun onRebind(intent: Intent?) {
-        (application as LocalLlmApplication).prewarmModel()
-    }
+    // Binding proves only that the manifest permission gate passed. Exact package-plus-signer
+    // authorization happens on each Binder transaction, so a simple bind must stay inert.
+    override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onDestroy() {
         scope.cancel()
@@ -74,12 +64,24 @@ class InferenceService : Service() {
 
     private val binder = object : IInsightService.Stub() {
 
-        override fun getApiVersion(): Int = InsightContract.VERSION
+        override fun getApiVersion(): Int {
+            return authorizedServiceCall(
+                authorize = { enforceCaller() },
+                afterAuthorization = { (application as LocalLlmApplication).prewarmModel() },
+                call = { InsightContract.VERSION },
+            )
+        }
 
-        override fun getEngineState(): String =
-            InsightContract.json.encodeToString(EngineStatus.serializer(), engine.status.value)
+        override fun getEngineState(): String {
+            enforceCaller()
+            return InsightContract.json.encodeToString(
+                EngineStatus.serializer(),
+                engine.status.value,
+            )
+        }
 
         override fun requestInsight(requestJson: String, callback: IInsightCallback): String {
+            val callerUid = enforceCaller()
             val requestId = UUID.randomUUID().toString()
 
             val request = try {
@@ -89,25 +91,31 @@ class InferenceService : Service() {
                 return requestId
             }
 
-            if (request.contractVersion > InsightContract.VERSION) {
+            V1RequestValidator.errorMessage(request)?.let { validationError ->
                 callback.safeError(
                     requestId,
                     LocalLlmError.INVALID_REQUEST,
-                    "Client asked for contract v${request.contractVersion}; " +
-                        "this service implements v${InsightContract.VERSION}.",
+                    validationError,
                 )
                 return requestId
             }
 
-            val job = scope.launch {
+            val callbackBinder = callback.asBinder()
+            val job = scope.launch(start = CoroutineStart.LAZY) {
                 val builder = StringBuilder()
                 try {
-                    engine.prepare { percent, stage -> callback.safeProgress(requestId, percent, stage) }
+                    engine.prepare { percent, stage ->
+                        if (!callback.safeProgress(requestId, percent, stage)) {
+                            throw CancellationException("Client callback is unavailable")
+                        }
+                    }
                     engine.generate(request)
                         .catch { error -> throw error }
                         .collect { fragment ->
                             builder.append(fragment)
-                            if (request.stream) callback.safeToken(requestId, fragment)
+                            if (request.stream && !callback.safeToken(requestId, fragment)) {
+                                throw CancellationException("Client callback is unavailable")
+                            }
                         }
                     callback.safeComplete(requestId, builder.toString().trim(), null)
                 } catch (cancelled: CancellationException) {
@@ -119,35 +127,77 @@ class InferenceService : Service() {
                 } catch (error: Throwable) {
                     Log.e(TAG, "Generation failed", error)
                     callback.safeError(requestId, LocalLlmError.INTERNAL, error.message.orEmpty())
-                } finally {
-                    inFlight.remove(requestId)
                 }
             }
-            inFlight[requestId] = job
+            lateinit var record: InFlightRequest
+            val deathRecipient = IBinder.DeathRecipient {
+                inFlight[requestId]
+                    ?.takeIf { it === record }
+                    ?.job
+                    ?.cancel(CancellationException("Client callback Binder died"))
+            }
+            record = InFlightRequest(callerUid, job, callbackBinder, deathRecipient)
+            job.invokeOnCompletion {
+                inFlight.remove(requestId, record)
+                runCatching { record.callbackBinder.unlinkToDeath(record.deathRecipient, 0) }
+            }
+            inFlight[requestId] = record
+            try {
+                record.callbackBinder.linkToDeath(record.deathRecipient, 0)
+                if (!record.callbackBinder.isBinderAlive) {
+                    job.cancel(CancellationException("Client callback Binder is already dead"))
+                } else {
+                    job.start()
+                }
+            } catch (_: RemoteException) {
+                job.cancel(CancellationException("Client callback Binder is already dead"))
+            }
             return requestId
         }
 
         override fun cancel(requestId: String) {
-            inFlight.remove(requestId)?.cancel()
+            val callerUid = enforceCaller()
+            val request = inFlight[requestId] ?: return
+            if (request.callerUid != callerUid) {
+                throw SecurityException("A client cannot cancel another client's request")
+            }
+            request.job.cancel()
         }
     }
 
+    private fun enforceCaller(): Int = Binder.getCallingUid().also(callerAuthorizer::enforceAuthorized)
+
     // A dead client is an ordinary event, not an error worth crashing the service over.
-    private fun IInsightCallback.safeToken(id: String, token: String) =
-        runCatching { onToken(id, token) }.logFailure()
+    private fun IInsightCallback.safeToken(id: String, token: String): Boolean =
+        runCatching { onToken(id, token) }.callbackDelivered()
 
-    private fun IInsightCallback.safeComplete(id: String, text: String, json: String?) =
-        runCatching { onComplete(id, text, json) }.logFailure()
+    private fun IInsightCallback.safeComplete(id: String, text: String, json: String?): Boolean =
+        runCatching { onComplete(id, text, json) }.callbackDelivered()
 
-    private fun IInsightCallback.safeError(id: String, code: Int, message: String) =
-        runCatching { onError(id, code, message) }.logFailure()
+    private fun IInsightCallback.safeError(id: String, code: Int, message: String): Boolean =
+        runCatching { onError(id, code, message) }.callbackDelivered()
 
-    private fun IInsightCallback.safeProgress(id: String, percent: Int, stage: String) =
-        runCatching { onProgress(id, percent, stage) }.logFailure()
+    private fun IInsightCallback.safeProgress(id: String, percent: Int, stage: String): Boolean =
+        runCatching { onProgress(id, percent, stage) }.callbackDelivered()
 
-    private fun <T> Result<T>.logFailure() = onFailure { error ->
-        if (error is RemoteException) Log.d(TAG, "Client went away", error) else throw error
-    }
+    private fun <T> Result<T>.callbackDelivered(): Boolean = fold(
+        onSuccess = { true },
+        onFailure = { error ->
+            if (error is RemoteException) {
+                Log.d(TAG, "Client went away", error)
+                false
+            } else {
+                throw error
+            }
+        },
+    )
+
+    private data class InFlightRequest(
+        val callerUid: Int,
+        val job: Job,
+        val callbackBinder: IBinder,
+        val deathRecipient: IBinder.DeathRecipient,
+    )
 
     /**
      * Deliberately NOT promoted to the foreground while serving a bound request.
@@ -184,4 +234,15 @@ class InferenceService : Service() {
         private const val CHANNEL_ID = "engine"
         private const val NOTIFICATION_ID = 1001
     }
+}
+
+/** Orders optional expensive work strictly after exact Binder-caller authorization. */
+internal fun <T> authorizedServiceCall(
+    authorize: () -> Unit,
+    afterAuthorization: () -> Unit = {},
+    call: () -> T,
+): T {
+    authorize()
+    afterAuthorization()
+    return call()
 }

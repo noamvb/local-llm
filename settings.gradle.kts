@@ -24,4 +24,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "LocalLLM"
 
-include(":app")
+include(":app", ":client")

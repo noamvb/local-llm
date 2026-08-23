@@ -17,7 +17,7 @@ import kotlinx.serialization.json.Json
  * producing confident nonsense. The model's only job is to turn facts into sentences.
  */
 object InsightContract {
-    /** Bump when a change is not backward compatible. Clients compare against getApiVersion(). */
+    /** Bump for incompatible changes; clients use an explicit getApiVersion compatibility set. */
     const val VERSION = 1
 
     val json: Json = Json {
@@ -101,8 +101,8 @@ data class InsightRequest(
     /** Emit onToken callbacks as text is produced. */
     val stream: Boolean = true,
     /**
-     * Optional JSON schema. When present the runtime constrains decoding so the result
-     * is guaranteed-parseable JSON, delivered in onComplete's resultJson.
+     * Reserved for a later contract version. Contract v1 does not implement constrained
+     * structured decoding and explicitly rejects every non-null value as INVALID_REQUEST.
      */
     val resultSchema: String? = null,
     val safety: SafetyPolicy = SafetyPolicy(),

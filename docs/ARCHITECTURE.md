@@ -40,6 +40,22 @@ Access is controlled by one custom permission declared with
 Android grants it to apps signed by LocalLLM's own key **or** by any certificate whose
 SHA-256 digest appears in `app/src/main/res/values/known_signers.xml`.
 
+The permission is necessary but not sufficient. `InferenceService` authorizes every AIDL
+transaction using `Binder.getCallingUid()`: the UID must map only to one exact approved
+package whose Android-authenticated signing lineage contains its pinned published
+certificate. This prevents a different app signed with an otherwise known certificate
+from inheriting inference access. The host declares visibility for only those two package
+names so signing information is queryable even before Android's bound-service interaction
+[makes a caller automatically visible](https://developer.android.com/training/package-visibility/automatic).
+The request's self-declared `clientId` is never trusted.
+
+Authentication also runs in the other direction. Before every bind, the canonical client
+directly inspects the pinned `com.noamv.localllm.service.InferenceService` component and
+verifies the installed LocalLLM package's current certificate or a legitimate rotated
+descendant of its pinned release lineage. It re-checks that exact component after
+connection. A same-package APK with an unrelated signer, or a wrong service class inside
+the right package, is therefore not allowed to receive client facts.
+
 A plain `signature` permission does not work here, and assuming it did was a real defect.
 The three apps are signed by three different keys — Poop Schedule with its own release
 keystore, Cannsheet Mobile with a debug certificate, LocalLLM with its own — so a plain
@@ -55,6 +71,13 @@ Three consequences worth remembering:
 3. **Package visibility.** From Android 11, a client cannot even see the service unless
    it declares `<queries><package android:name="com.noamv.localllm" /></queries>`.
    Without it `bindService` returns `false` and nothing else explains why.
+4. **Package names are not authentication.** Both directions verify package and signing
+   lineage. Adding or rotating an approved identity is a reviewed resource change backed
+   by a published artifact.
+5. **A bind is intentionally inert.** The broad manifest permission can admit another
+   package signed by a known certificate, so model prewarm starts only after an exact
+   caller check succeeds on `getApiVersion()` (or preparation begins on an authorized
+   generation request).
 
 ## Lifecycle and memory
 
@@ -63,6 +86,9 @@ contiguous allocation. Two decisions follow:
 
 - The engine lives on `LocalLlmApplication`, not on the service, so it survives unbind
   and rebind. Otherwise every app switch would pay a reload.
+- The canonical client's `warmup()` performs package/signing verification and a bounded,
+  authorized version transaction. That transaction may start non-downloading prewarm;
+  merely acquiring a service binding never does.
 - One lifecycle coordinator owns the native handle and serializes preparation,
   generation, unload, close and critical trim. A trim request waits for active native
   inference to finish before closing the handle; it never races `Engine.initialize()` or

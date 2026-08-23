@@ -23,4 +23,15 @@
         <!-- Cannsheet Mobile (noamvb/cannsheet-mobile-releases) -->
         <item>a9787249b106d98a421ed839789361a45753e367e243820d10d2f3a09708665e</item>
     </string-array>
+
+    <!--
+      Runtime Binder authorization is deliberately narrower than permission grant. Each
+      entry is an exact package name and an approved certificate in its Android-authenticated
+      signing lineage. Values were re-read from independently downloaded current release
+      APKs on 2026-08-23: Poop Schedule 1.3.0 and Cannsheet Mobile 1.6.2.
+    -->
+    <string-array name="localllm_approved_callers">
+        <item>com.noamv.poopschedule|98198cd143954c564faa0cc6408918edbc1a2311f2f4817cfe89223923a55cde</item>
+        <item>com.noamv.cannsheet.mobile|a9787249b106d98a421ed839789361a45753e367e243820d10d2f3a09708665e</item>
+    </string-array>
 </resources>

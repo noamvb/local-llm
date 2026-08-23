@@ -16,8 +16,9 @@ import com.noamv.localllm.IInsightCallback;
 interface IInsightService {
 
     /**
-     * Contract version implemented by this service. Clients must check this before use
-     * and degrade gracefully when it is higher than they were built against.
+     * Highest contract version implemented by this service. Clients must call this on
+     * the same binding they will use. A numerically higher unknown value does not itself
+     * prove v1 compatibility; clients accept only explicitly declared compatible values.
      */
     int getApiVersion();
 
