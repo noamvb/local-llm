@@ -1,0 +1,243 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.invalid/localllm/router-decision/draft-1",
+  "title": "Provisional LocalLLM router decision",
+  "description": "Research-only constrained output. This is not the frozen V2 wire contract.",
+  "oneOf": [
+    { "$ref": "#/$defs/queryDecision" },
+    { "$ref": "#/$defs/clarifyDecision" },
+    { "$ref": "#/$defs/unsupportedDecision" }
+  ],
+  "$defs": {
+    "source": {
+      "type": "string",
+      "enum": ["CANNSHEET", "POOP_SCHEDULE"]
+    },
+    "metric": {
+      "type": "string",
+      "enum": [
+        "cannsheet.consumption_count",
+        "cannsheet.active_days",
+        "cannsheet.time_band_counts",
+        "cannsheet.weekday_counts",
+        "cannsheet.product_log_counts",
+        "cannsheet.purchase_count",
+        "cannsheet.recorded_spend",
+        "cannsheet.recorded_spend_coverage",
+        "cannsheet.inventory_remaining",
+        "poop.entry_count",
+        "poop.active_days",
+        "poop.frequency_per_week",
+        "poop.average_interval",
+        "poop.average_duration",
+        "poop.time_band_counts",
+        "poop.weekday_counts",
+        "poop.bristol_type_counts",
+        "poop.colour_counts",
+        "poop.size_counts",
+        "poop.symptom_counts",
+        "poop.rating_averages"
+      ]
+    },
+    "period": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode", "days"],
+          "properties": {
+            "mode": { "const": "LAST_DAYS" },
+            "days": { "type": "integer", "minimum": 1, "maximum": 366 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode", "start", "end"],
+          "properties": {
+            "mode": { "const": "EXPLICIT_DATES" },
+            "start": {
+              "type": "string",
+              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+            },
+            "end": {
+              "type": "string",
+              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode"],
+          "properties": {
+            "mode": { "const": "ALL_TIME" }
+          }
+        }
+      ]
+    },
+    "filter": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source", "field", "operator", "value"],
+          "properties": {
+            "source": { "const": "CANNSHEET" },
+            "field": { "const": "cannsheet.product_name" },
+            "operator": { "const": "EXACT_NAME" },
+            "value": { "type": "string", "minLength": 1, "maxLength": 80 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source", "field", "operator", "value"],
+          "properties": {
+            "source": { "const": "POOP_SCHEDULE" },
+            "field": { "const": "poop.note_query" },
+            "operator": { "const": "TEXT_CONTAINS" },
+            "value": { "type": "string", "minLength": 1, "maxLength": 120 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source", "field", "operator", "value"],
+          "properties": {
+            "source": { "const": "POOP_SCHEDULE" },
+            "field": { "const": "poop.bristol_type" },
+            "operator": { "const": "EQUALS" },
+            "value": { "type": "integer", "minimum": 1, "maximum": 7 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source", "field", "operator", "value"],
+          "properties": {
+            "source": { "const": "POOP_SCHEDULE" },
+            "field": {
+              "type": "string",
+              "enum": ["poop.colour", "poop.size", "poop.symptom"]
+            },
+            "operator": { "const": "EQUALS" },
+            "value": { "type": "string", "minLength": 1, "maxLength": 40 }
+          }
+        }
+      ]
+    },
+    "aggregateQuery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "grammarVersion",
+        "sources",
+        "metrics",
+        "period",
+        "comparison",
+        "groupings",
+        "filters",
+        "resultMode"
+      ],
+      "properties": {
+        "grammarVersion": { "const": 1 },
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/source" }
+        },
+        "metrics": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/metric" }
+        },
+        "period": { "$ref": "#/$defs/period" },
+        "comparison": {
+          "type": "string",
+          "enum": ["NONE", "PREVIOUS_EQUAL_PERIOD"]
+        },
+        "groupings": {
+          "type": "array",
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "DAY",
+              "WEEK",
+              "WEEKDAY",
+              "TIME_BAND",
+              "PRODUCT",
+              "BRISTOL_TYPE",
+              "COLOUR",
+              "SIZE"
+            ]
+          }
+        },
+        "filters": {
+          "type": "array",
+          "maxItems": 4,
+          "items": { "$ref": "#/$defs/filter" }
+        },
+        "resultMode": {
+          "type": "string",
+          "enum": ["FACTS", "COUNT_AND_NAVIGATION", "EXPLANATION"]
+        }
+      }
+    },
+    "queryDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision", "query"],
+      "properties": {
+        "decision": { "const": "QUERY" },
+        "query": { "$ref": "#/$defs/aggregateQuery" }
+      }
+    },
+    "clarifyDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision", "clarificationId"],
+      "properties": {
+        "decision": { "const": "CLARIFY" },
+        "clarificationId": {
+          "type": "string",
+          "enum": [
+            "CHOOSE_SOURCE",
+            "CHOOSE_METRIC",
+            "CHOOSE_DATE",
+            "CHOOSE_PRODUCT",
+            "SPLIT_REQUEST",
+            "UNKNOWN_SOURCE",
+            "UNKNOWN_METRIC",
+            "UNKNOWN_PRODUCT"
+          ]
+        }
+      }
+    },
+    "unsupportedDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision", "limitationId"],
+      "properties": {
+        "decision": { "const": "UNSUPPORTED" },
+        "limitationId": {
+          "type": "string",
+          "enum": [
+            "READ_ONLY",
+            "MEDICAL_OR_CAUSAL",
+            "RAW_DATA_UNAVAILABLE",
+            "PROJECTION_UNAVAILABLE",
+            "OUT_OF_GRAMMAR",
+            "UNSAFE_OR_MALFORMED"
+          ]
+        }
+      }
+    }
+  }
+}

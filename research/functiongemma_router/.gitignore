@@ -1,0 +1,16 @@
+# Generated training/conversion outputs and credentials never belong in this repository.
+.env
+*.token
+checkpoints/
+artifacts/
+outputs/
+*.safetensors
+*.gguf
+*.bin
+*.h5
+*.litertlm
+*.tflite
+*.onnx
+*.ckpt
+*.pt
+*.pth

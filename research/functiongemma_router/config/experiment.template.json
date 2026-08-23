@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "status": "PROVISIONAL_NOT_RUNNABLE",
+  "language": "en",
+  "purpose": "Route English owner questions into the bounded read-only AggregateQuery draft grammar",
+  "baseModel": {
+    "modelId": "google/functiongemma-270m-it",
+    "revision": "REQUIRED_IMMUTABLE_REVISION",
+    "sourceArtifactSha256": "REQUIRED_SHA256",
+    "termsUrl": "https://ai.google.dev/gemma/terms",
+    "termsAcceptedBy": "REQUIRED_HUMAN",
+    "termsAcceptedAtUtc": "REQUIRED_TIMESTAMP"
+  },
+  "dataset": {
+    "trainingManifest": "REQUIRED_VERSIONED_MANIFEST",
+    "trainingManifestSha256": "REQUIRED_SHA256",
+    "evaluationManifests": [
+      {
+        "name": "router-seed-v0",
+        "path": "corpus/manifest.json",
+        "sha256": "REQUIRED_RECOMPUTED_MANIFEST_SHA256",
+        "productionEligible": false
+      }
+    ],
+    "syntheticOnly": true,
+    "manualReviewComplete": false,
+    "personalQuestionsUsedForTraining": false,
+    "splitUnit": "semantic_template_family"
+  },
+  "training": {
+    "codeRevision": "REQUIRED_GIT_SHA",
+    "containerImageDigest": "REQUIRED_IMAGE_DIGEST",
+    "pythonVersion": "REQUIRED_EXACT_VERSION",
+    "packageLockSha256": "REQUIRED_SHA256",
+    "seed": 240823,
+    "method": "supervised_fine_tuning",
+    "epochs": "PROVISIONAL",
+    "learningRate": "PROVISIONAL",
+    "batchSize": "PROVISIONAL",
+    "gradientAccumulationSteps": "PROVISIONAL",
+    "maxSequenceLength": "PROVISIONAL",
+    "precision": "PROVISIONAL",
+    "adapterConfiguration": "PROVISIONAL"
+  },
+  "conversion": {
+    "tool": "REQUIRED_AFTER_EXECUTABLE_SPIKE",
+    "toolRevision": "REQUIRED_IMMUTABLE_REVISION",
+    "commandDigest": "REQUIRED_SHA256",
+    "quantization": "PROVISIONAL",
+    "litertLmTag": "v0.16.1",
+    "litertLmCommit": "924e79c91542761242244e4f1651851f822e4cbb",
+    "functionGemmaChatTemplatePreserved": false,
+    "manualToolCallingVerified": false,
+    "constrainedOutputVerified": false
+  },
+  "evaluation": {
+    "predictionsAreCompleteRawText": true,
+    "automaticToolCalling": false,
+    "modelGeneratedConfidenceAccepted": false,
+    "requiredGates": {
+      "parseable": 1.0,
+      "schemaAndPolicyValid": 1.0,
+      "supportedExactFullQueryAndArguments": 0.99,
+      "ambiguousClarified": 1.0,
+      "forbiddenRejected": 1.0,
+      "implicitCrossAppPrevented": 1.0
+    }
+  },
+  "notes": [
+    "Do not select hyperparameters by looking at the frozen held-out test split.",
+    "Do not freeze this template until deterministic and base-model spikes expose ambiguous grammar shapes.",
+    "Saved owner questions remain private on-device evaluation and never enter this config or training data."
+  ]
+}
