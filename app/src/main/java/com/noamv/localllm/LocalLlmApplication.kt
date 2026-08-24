@@ -95,20 +95,17 @@ class LocalLlmApplication : Application() {
         ModelResidencyCoordinator(this)
     }
 
+    internal val factProviderClient: com.noamv.localllm.orchestrator.FactProviderClient by lazy {
+        com.noamv.localllm.orchestrator.FactProviderClient(this)
+    }
+
     internal val assistantOrchestrator: AssistantOrchestratorV2 by lazy {
         AssistantOrchestratorV2(
             engine = engine,
             historyRepository = historyRepository,
             accessPolicy = accessPolicy,
             residencyCoordinator = residencyCoordinator,
-            factProviderQuery = { _, _ ->
-                com.noamv.localllm.contract.v2.ProviderFactsResult(
-                    sourceApp = com.noamv.localllm.contract.v2.AppSource.CANNSHEET,
-                    revision = "v2",
-                    asOfTime = System.currentTimeMillis(),
-                    timezone = "UTC",
-                )
-            },
+            factProviderQuery = factProviderClient::queryFacts,
         )
     }
 
