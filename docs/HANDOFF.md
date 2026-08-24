@@ -32,8 +32,11 @@ It has not been pushed, merged, released, installed, launched, or used to downlo
   progress, and late acquisition completion cannot overwrite `INITIALISING` or `READY`
   after atomic promotion.
 - Owner cancellation propagates into the existing ModelStore cancellation boundary, which
-  immediately cancels OkHttp and retains safely written partial bytes. Critical trim also
-  cancels the owner job before coordinated engine unload.
+  immediately cancels OkHttp and retains safely written partial bytes. Owner acquisition and
+  directly registered prewarm work capture a process-work epoch. Critical trim invalidates that
+  epoch before cancelling both jobs, so a pre-trim request cannot register late and construct
+  the engine or start a transfer afterward; only coordinated unload depends on an engine already
+  existing.
 - README, architecture, API guidance, and durable decisions now describe the installed-only
   request boundary and explicit owner acquisition.
 
@@ -67,6 +70,15 @@ partial preservation, runtime/acquisition status arbitration, installed/proven f
 selection, missing-model v1 classification, prewarm policy, and manager self-test
 separation.
 
+An independent read-only Sol/xhigh audit of commit
+`986e3529ea9c0f910be4b60a49aec3ec131e0dba` found no P0/P1 issue and one P2 critical-trim
+scheduling race: the old engine-uninitialized early return could skip cancellation before a
+requested owner/prewarm coroutine constructed the lazy engine. The corrected source moves the
+engine guard to unload only, registers prewarm directly, invalidates a process-work epoch before
+cancellation, and adds stale/pre-trim plus valid/post-trim regressions. Its focused
+`OwnerModelAcquisitionCoordinatorTest` and `PrewarmPolicyTest` gate passed 8 tests with zero
+failures, errors, or skips in 3 minutes 21 seconds.
+
 Required full clean gate:
 
 ```bash
@@ -77,10 +89,11 @@ GRADLE_USER_HOME=/private/tmp/localllm-roadmap-20260823.pO7j0d/gradle-manager-do
   -Pkotlin.compiler.execution.strategy=in-process
 ```
 
-Result: `BUILD SUCCESSFUL` in 14 minutes 31 seconds; 100 tasks completed. All 191 JVM
-tests passed: 146 app and 45 canonical client, with zero failures, errors, or skips. The
-app debug APK and client debug AAR assembled. App lint reported 24 warnings and no errors;
-client lint reported no issues.
+The first pre-audit run completed in 14 minutes 31 seconds with 191 tests. After correcting the
+P2 race, the exact same clean/rerun gate completed again with all 100 tasks executed in 1 minute
+35 seconds. The corrected head passed all 193 JVM tests: 148 app and 45 canonical client, with
+zero failures, errors, or skips. The app debug APK and client debug AAR assembled. App lint
+reported 24 warnings and no errors; client lint reported no issues.
 
 The first focused attempt stopped before compilation because the throwaway worktree had no
 SDK pointer. It was rerun with the documented `ANDROID_HOME` above and passed; no

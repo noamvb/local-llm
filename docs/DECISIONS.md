@@ -26,6 +26,12 @@ acquisition completion. Cancellation propagates into ModelStore and preserves it
 partial bytes; the public state continues to report `modelDownloaded=false` until a complete
 verified artifact is installed.
 
+Owner acquisition and authorized prewarm capture a process-work epoch before registering.
+Critical memory trim advances that epoch before cancelling both directly registered jobs,
+so work requested before trim cannot register late and construct an engine or start a
+transfer afterward. The engine-existence guard applies only to coordinated unload, never
+to cancellation.
+
 **Why.** A policy check around a download-capable `prepare()` did not make the boundary
 true: generation still called the same method and could start network work, while manager
 acquisition and client preparation could overwrite each other's status. A compile-time

@@ -7,6 +7,7 @@ import com.noamv.localllm.engine.LiteRtEngine
 import com.noamv.localllm.engine.LlmEngine
 import com.noamv.localllm.engine.ModelAcquirer
 import com.noamv.localllm.engine.OwnerModelAcquisitionCoordinator
+import com.noamv.localllm.engine.ProcessWorkEpoch
 import com.noamv.localllm.engine.shouldPrewarmOnBind
 import com.noamv.localllm.model.ModelStore
 import kotlinx.coroutines.CancellationException
@@ -58,9 +59,12 @@ class LocalLlmApplication : Application() {
     /** One admission owner for every native generation role in this process. */
     val inferenceScheduler: InferenceScheduler by lazy { InferenceScheduler(applicationScope) }
 
+    private val processWorkEpoch = ProcessWorkEpoch()
+
     private val ownerAcquisition by lazy {
         OwnerModelAcquisitionCoordinator(
             scope = applicationScope,
+            workEpoch = processWorkEpoch,
             acquireAndPrepare = {
                 modelAcquirer.acquirePreferredArtifact()
                 engine.prepare()
@@ -85,10 +89,13 @@ class LocalLlmApplication : Application() {
      * Progress and failures are published through [engine] status, which the UI observes,
      * so nothing is lost by not returning them here.
      */
-    fun acquireAndPrepareModel(): Job = ownerAcquisition.start()
+    fun acquireAndPrepareModel(): Job {
+        val ticket = processWorkEpoch.ticket()
+        return ownerAcquisition.start(ticket)
+    }
 
     /** Process-owned, installed-artifact-only preparation used by authorized prewarm. */
-    private fun prepareInstalledModel(): Job {
+    private fun prepareInstalledModel(ticket: Long): Job {
         synchronized(prewarmJobLock) {
             prewarmJob?.takeIf { it.isActive }?.let { return it }
 
@@ -97,8 +104,9 @@ class LocalLlmApplication : Application() {
             // after which callers could retain a stale completed job.
             lateinit var newJob: Job
             newJob = applicationScope.launch(start = CoroutineStart.LAZY) {
+                if (!processWorkEpoch.isCurrent(ticket)) return@launch
                 try {
-                    engine.prepare()
+                    if (shouldPrewarmOnBind(engine.status.value)) engine.prepare()
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (error: Throwable) {
@@ -125,11 +133,11 @@ class LocalLlmApplication : Application() {
      * [acquireAndPrepareModel] may cross the owner acquisition boundary.
      */
     fun prewarmModel() {
-        applicationScope.launch {
-            // Reading engine.status constructs the engine lazily, which touches the disk.
-            // Doing it inside the coroutine keeps that off the binder/main thread.
-            if (shouldPrewarmOnBind(engine.status.value)) prepareInstalledModel()
-        }
+        val ticket = processWorkEpoch.ticket()
+        // Registration is synchronous, but engine/status disk work remains inside the
+        // process coroutine. This lets critical trim cancel the complete request instead
+        // of racing an untracked wrapper that could register preparation afterward.
+        prepareInstalledModel(ticket)
     }
 
     // The granular TRIM_MEMORY_* levels are deprecated from API 34, but no replacement
@@ -138,13 +146,15 @@ class LocalLlmApplication : Application() {
     @Suppress("DEPRECATION")
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        if (level < TRIM_MEMORY_RUNNING_CRITICAL || !engineDelegate.isInitialized()) return
+        if (level < TRIM_MEMORY_RUNNING_CRITICAL) return
 
         // Cancelling process-owned preparation preserves ModelStore's partial download.
         // Native generation itself is not pre-empted: unload waits behind the engine's
         // lifecycle coordinator and closes only after generation reaches a safe boundary.
+        processWorkEpoch.invalidate()
         ownerAcquisition.cancel()
         synchronized(prewarmJobLock) { prewarmJob?.cancel() }
+        if (!engineDelegate.isInitialized()) return
         applicationScope.launch { engine.unload() }
     }
 

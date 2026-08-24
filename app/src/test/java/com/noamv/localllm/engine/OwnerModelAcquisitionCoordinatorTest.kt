@@ -19,8 +19,10 @@ class OwnerModelAcquisitionCoordinatorTest {
         val calls = AtomicInteger()
         val firstStarted = CompletableDeferred<Unit>()
         val releaseFirst = CompletableDeferred<Unit>()
+        val workEpoch = ProcessWorkEpoch()
         val coordinator = OwnerModelAcquisitionCoordinator(
             scope = this,
+            workEpoch = workEpoch,
             acquireAndPrepare = {
                 if (calls.incrementAndGet() == 1) {
                     firstStarted.complete(Unit)
@@ -48,8 +50,10 @@ class OwnerModelAcquisitionCoordinatorTest {
     fun `cancellation reaches acquisition without clearing its resumable partial state`() = runTest {
         val started = CompletableDeferred<Unit>()
         var retainedPartialBytes = 0
+        val workEpoch = ProcessWorkEpoch()
         val coordinator = OwnerModelAcquisitionCoordinator(
             scope = this,
+            workEpoch = workEpoch,
             acquireAndPrepare = {
                 retainedPartialBytes = 4096
                 started.complete(Unit)
@@ -66,5 +70,43 @@ class OwnerModelAcquisitionCoordinatorTest {
 
         assertTrue(job.isCancelled)
         assertEquals(4096, retainedPartialBytes)
+    }
+
+    @Test
+    fun `request captured before critical trim cannot begin after trim invalidates it`() = runTest {
+        val workEpoch = ProcessWorkEpoch()
+        val calls = AtomicInteger()
+        val coordinator = OwnerModelAcquisitionCoordinator(
+            scope = this,
+            workEpoch = workEpoch,
+            acquireAndPrepare = { calls.incrementAndGet() },
+            onFailure = { throw AssertionError("unexpected failure", it) },
+        )
+        val preTrimTicket = workEpoch.ticket()
+
+        workEpoch.invalidate()
+        val staleJob = coordinator.start(preTrimTicket)
+        advanceUntilIdle()
+
+        assertTrue(staleJob.isCompleted)
+        assertEquals(0, calls.get())
+    }
+
+    @Test
+    fun `request captured after critical trim may start normally`() = runTest {
+        val workEpoch = ProcessWorkEpoch()
+        val calls = AtomicInteger()
+        val coordinator = OwnerModelAcquisitionCoordinator(
+            scope = this,
+            workEpoch = workEpoch,
+            acquireAndPrepare = { calls.incrementAndGet() },
+            onFailure = { throw AssertionError("unexpected failure", it) },
+        )
+
+        workEpoch.invalidate()
+        coordinator.start()
+        advanceUntilIdle()
+
+        assertEquals(1, calls.get())
     }
 }

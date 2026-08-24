@@ -102,9 +102,12 @@ contiguous allocation. Two decisions follow:
   Cancellation or Binder death before/during synchronous registration either prevents
   admission or removes the admitted entry; terminal scheduler state releases that record
   and its death recipient exactly once.
-- `onTrimMemory(TRIM_MEMORY_RUNNING_CRITICAL)` cancels process-owned preparation while
-  preserving any resumable partial download, then schedules a coordinated unload. Paying
-  a reload is better than having the process killed mid-generation.
+- `onTrimMemory(TRIM_MEMORY_RUNNING_CRITICAL)` first invalidates the process-work epoch,
+  then cancels process-owned acquisition and directly registered prewarm work while
+  preserving any resumable partial download. A request captured before trim cannot
+  register late and construct the engine afterward. Only the coordinated unload is
+  conditional on an engine already existing. Paying a reload is better than having the
+  process killed mid-generation.
 
 Engine preparation and model acquisition are separate types. `LlmEngine.prepare()` and
 `generate()` inspect only compatible artifacts already installed on disk. The Binder
@@ -153,8 +156,10 @@ SHA-256 taken from the HuggingFace LFS metadata and verified after download.
 Acquisition is an explicit owner-started manager action. Its application-owned job survives
 screen recreation, coalesces repeated taps, and is independent of the native-engine
 lifecycle lock so a missing-model client request never waits behind a multi-gigabyte
-transfer. Critical memory trim cancels that job; durable process-death transfer and a
-foreground-service handoff remain outside this Stage 1 boundary.
+transfer. Critical memory trim invalidates tickets captured by owner acquisition and
+prewarm before cancelling both registered jobs, so scheduling delay cannot resurrect
+pre-trim work. Durable process-death transfer and a foreground-service handoff remain
+outside this Stage 1 boundary.
 
 One coroutine-owned transfer coordinator serializes download, deletion, and pruning
 mutations. Cancelling a transfer immediately cancels its active OkHttp call, including a
