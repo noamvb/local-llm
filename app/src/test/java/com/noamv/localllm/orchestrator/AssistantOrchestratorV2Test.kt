@@ -3,25 +3,21 @@ package com.noamv.localllm.orchestrator
 import com.noamv.localllm.contract.EngineState
 import com.noamv.localllm.contract.EngineStatus
 import com.noamv.localllm.contract.InsightRequest
-import com.noamv.localllm.contract.v2.AppSource
+import com.noamv.localllm.contract.v2.*
 import com.noamv.localllm.engine.EngineTimings
-import com.noamv.localllm.contract.v2.AssistantEvent
-import com.noamv.localllm.contract.v2.AssistantEventType
-import com.noamv.localllm.contract.v2.AssistantTerminalStatus
-import com.noamv.localllm.contract.v2.AssistantTurnRequest
-import com.noamv.localllm.contract.v2.FactEvidence
-import com.noamv.localllm.contract.v2.ProviderFactsResult
 import com.noamv.localllm.engine.LlmEngine
 import com.noamv.localllm.engine.ModelResidencyCoordinator
 import com.noamv.localllm.history.AssistantHistoryRepository
 import com.noamv.localllm.history.FakeAssistantHistoryDao
 import com.noamv.localllm.privacy.AssistantAccessPolicy
 import com.noamv.localllm.privacy.FakeDataStore
+import com.noamv.localllm.transfer.ModelRole
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -159,15 +155,77 @@ class AssistantOrchestratorV2Test {
     }
 
     @Test
+    fun testCrossAppDualSourceTurnFlow() = runTest {
+        val crossEngine = FakeOrchestratorEngine("You spent $120.50 on cannabis and logged 14 bowel movements.")
+        val cannsheetFacts = listOf(
+            FactEvidence(
+                factId = "f_can_1",
+                sourceApp = AppSource.CANNSHEET,
+                sourceContractVersion = 2,
+                metricId = MetricId.CANNSHEET_RECORDED_SPEND.wireName,
+                displayLabel = "Spend",
+                displayValue = "$120.50",
+                timezone = "UTC",
+                asOfTime = 2000L,
+                sourceRevision = "rev-can-1",
+            ),
+        )
+        val poopFacts = listOf(
+            FactEvidence(
+                factId = "f_poop_1",
+                sourceApp = AppSource.POOP_SCHEDULE,
+                sourceContractVersion = 2,
+                metricId = MetricId.POOP_ENTRY_COUNT.wireName,
+                displayLabel = "Entries",
+                displayValue = "14",
+                timezone = "UTC",
+                asOfTime = 2000L,
+                sourceRevision = "rev-poop-1",
+            ),
+        )
+
+        val orchestrator = AssistantOrchestratorV2(
+            engine = crossEngine,
+            historyRepository = historyRepository,
+            accessPolicy = accessPolicy,
+            residencyCoordinator = residencyCoordinator,
+            factProviderQuery = { app, _ ->
+                when (app) {
+                    AppSource.CANNSHEET -> ProviderFactsResult(sourceApp = AppSource.CANNSHEET, facts = cannsheetFacts, revision = "rev-1", asOfTime = 2000L, timezone = "UTC")
+                    AppSource.POOP_SCHEDULE -> ProviderFactsResult(sourceApp = AppSource.POOP_SCHEDULE, facts = poopFacts, revision = "rev-1", asOfTime = 2000L, timezone = "UTC")
+                    else -> ProviderFactsResult(sourceApp = AppSource.UNKNOWN, revision = "rev-0", asOfTime = 0L, timezone = "UTC")
+                }
+            },
+        )
+
+        val request = AssistantTurnRequest(
+            requestId = "req-cross",
+            threadId = "thread-cross",
+            initiatingClient = "com.example.cannsheet",
+            question = "Summarize my spend and bowel movements this month",
+            defaultSource = AppSource.CANNSHEET,
+            maxSourcesAllowed = 2,
+            allowCrossApp = true,
+        )
+
+        val events = mutableListOf<AssistantEvent>()
+        val result = orchestrator.executeTurn(request) { events.add(it) }
+
+        assertEquals(AssistantTerminalStatus.VALIDATED, result.status)
+        assertNotNull(result.historyId)
+        assertTrue(result.citations.isNotEmpty())
+    }
+
+    @Test
     fun testEmptyFactsReturnsPartialSourceStatus() = runTest {
         val orchestrator = AssistantOrchestratorV2(
             engine = fakeEngine,
             historyRepository = historyRepository,
             accessPolicy = accessPolicy,
             residencyCoordinator = residencyCoordinator,
-            factProviderQuery = { _, _ ->
+            factProviderQuery = { app, _ ->
                 ProviderFactsResult(
-                    sourceApp = AppSource.CANNSHEET,
+                    sourceApp = app,
                     facts = emptyList(),
                     revision = "rev-1",
                     asOfTime = 2000L,
@@ -244,7 +302,7 @@ class AssistantOrchestratorV2Test {
     @Test
     fun testBuildWriterPromptIncludesPriorTurnsContext() {
         val priorTurns = listOf(
-            com.noamv.localllm.contract.v2.HistoryTurnRecord(
+            HistoryTurnRecord(
                 historyId = 1L,
                 threadId = "t1",
                 timestamp = 1000L,
@@ -281,6 +339,17 @@ class AssistantOrchestratorV2Test {
         assertTrue(prompt.contains("How many times did I smoke?"))
         assertTrue(prompt.contains("You had 10 sessions."))
         assertTrue(prompt.contains("Current Question: And what was my spend?"))
+    }
+
+    @Test
+    fun testResidencyUnderSimulatedMemoryPressure() = runTest {
+        val lowMemCoordinator = ModelResidencyCoordinator { 1_500_000_000L } // 1.5 GB < 2.5 GB threshold
+        assertFalse(lowMemCoordinator.canDualReside())
+        assertTrue(lowMemCoordinator.shouldUnloadOtherRoles(ModelRole.WRITER, setOf(ModelRole.ROUTER)))
+
+        val highMemCoordinator = ModelResidencyCoordinator { 4_000_000_000L } // 4 GB >= 2.5 GB threshold
+        assertTrue(highMemCoordinator.canDualReside())
+        assertFalse(highMemCoordinator.shouldUnloadOtherRoles(ModelRole.WRITER, setOf(ModelRole.ROUTER)))
     }
 }
 
