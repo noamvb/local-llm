@@ -15,7 +15,17 @@ internal class ModelStartupPolicy(
         isInstalled = isInstalled,
     )
 
-    fun hasInstalledCandidate(): Boolean = candidates().any(isInstalled)
+    /** Preparation may inspect only these candidates; missing builds are acquisition work. */
+    fun installedCandidates(): List<ModelBuild> = candidates().filter(isInstalled)
+
+    fun hasInstalledCandidate(): Boolean = installedCandidates().isNotEmpty()
+
+    /**
+     * Owner acquisition fetches one preferred artifact only when no compatible artifact
+     * already exists. Backend failure never advances this into a fallback download.
+     */
+    fun ownerAcquisitionTarget(): ModelBuild? =
+        preferredBuild.takeIf { installedCandidates().isEmpty() }
 
     fun recordSuccess(build: ModelBuild): Boolean = successfulBuildStore.write(build)
 }

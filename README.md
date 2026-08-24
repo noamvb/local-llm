@@ -31,7 +31,10 @@ request is made; the model's only job is to turn those facts into sentences. See
 
 ## Model storage
 
-The model is downloaded on first use from the public, ungated
+The owner downloads the model explicitly from the LocalLLM manager screen. Client status,
+prewarm, self-test, and generation paths use installed artifacts only and never initiate a
+network transfer; a client request made before installation receives `MODEL_NOT_READY`.
+The artifact comes from the public, ungated
 [litert-community](https://huggingface.co/litert-community) HuggingFace repositories and
 verified against a known SHA-256 before it is used. It is stored in internal app storage
 under `files/models`, is excluded from backup, and is removed when the app is uninstalled.

@@ -2,6 +2,11 @@ package com.noamv.localllm.engine
 
 import com.noamv.localllm.model.ModelBuild
 
+/** No compatible verified artifact is installed; owner acquisition is required. */
+class ModelNotInstalledException(
+    val preferredBuild: ModelBuild,
+) : Exception("${preferredBuild.displayName} is not installed.")
+
 /** Download, storage, or verification failed before a backend was initialized. */
 class ModelAcquisitionException(
     val build: ModelBuild,

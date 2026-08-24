@@ -17,8 +17,11 @@ interface LlmEngine : AutoCloseable {
     val timings: StateFlow<EngineTimings>
 
     /**
-     * Ensures the model is downloaded and the engine initialised. Safe to call
-     * repeatedly; concurrent callers await the same work.
+     * Initialises from compatible artifacts already installed on this device.
+     *
+     * This method never performs acquisition or waits for a download. When no compatible
+     * artifact is installed it fails with [ModelNotInstalledException]. Safe to call
+     * repeatedly; concurrent initialisation callers await the same native work.
      */
     suspend fun prepare(onProgress: (percent: Int, stage: String) -> Unit = { _, _ -> })
 

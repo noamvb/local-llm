@@ -31,6 +31,8 @@ import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -45,7 +47,7 @@ class LiteRtEngine internal constructor(
     private val context: Context,
     private val store: ModelStore,
     private val successfulBuildStore: SuccessfulModelBuildStore,
-) : LlmEngine {
+) : LlmEngine, ModelAcquirer {
 
     constructor(context: Context, store: ModelStore) : this(
         context = context,
@@ -65,6 +67,8 @@ class LiteRtEngine internal constructor(
 
     private fun startupCandidates(): List<ModelBuild> = startupPolicy.candidates()
 
+    private fun installedCandidates(): List<ModelBuild> = startupPolicy.installedCandidates()
+
     private fun hasInstalledCandidate(): Boolean = startupPolicy.hasInstalledCandidate()
 
     private fun initialStatusBuild(): ModelBuild =
@@ -72,14 +76,14 @@ class LiteRtEngine internal constructor(
 
     private val initialBuild = initialStatusBuild()
 
-    private val _status = MutableStateFlow(
+    private val statusCoordinator = EngineStatusCoordinator(
         EngineStatus(
             state = EngineState.MODEL_MISSING,
             modelId = initialBuild.id,
             modelDownloaded = hasInstalledCandidate(),
         ),
     )
-    override val status: StateFlow<EngineStatus> = _status.asStateFlow()
+    override val status: StateFlow<EngineStatus> = statusCoordinator.status
 
     private val _timings = MutableStateFlow(EngineTimings())
     override val timings: StateFlow<EngineTimings> = _timings.asStateFlow()
@@ -87,38 +91,87 @@ class LiteRtEngine internal constructor(
     private val lifecycle = EngineLifecycleCoordinator<Engine> { error ->
         Log.w(TAG, "Engine close failed", error)
     }
+    private val acquisitionLock = Mutex()
 
     val activeBuild: ModelBuild?
         get() = lifecycle.activeBuild
 
     override suspend fun prepare(onProgress: (Int, String) -> Unit) {
         try {
-            lifecycle.prepare { loadFirstAvailable(onProgress) }
+            lifecycle.prepare { loadFirstInstalled(onProgress) }
         } catch (outOfMemory: OutOfMemoryError) {
-            publishOutOfMemory(activeBuild?.id ?: _status.value.modelId)
+            publishOutOfMemory(activeBuild?.id ?: status.value.modelId)
             throw outOfMemory
         }
     }
 
-    private suspend fun loadFirstAvailable(
+    override suspend fun acquirePreferredArtifact() {
+        acquisitionLock.withLock {
+            val build = startupPolicy.ownerAcquisitionTarget() ?: return
+            val acquisitionId = statusCoordinator.beginAcquisition(
+                EngineStatus(
+                    state = EngineState.DOWNLOADING,
+                    modelId = build.id,
+                    detail = "Downloading ${build.displayName}",
+                    modelDownloaded = hasInstalledCandidate(),
+                ),
+            )
+            try {
+                store.ensureAvailable(build) { progress ->
+                    statusCoordinator.publishAcquisitionProgress(acquisitionId, progress.percent)
+                }
+                statusCoordinator.finishAcquisition(
+                    acquisitionId,
+                    unloadedStatus(build.id, "Downloaded; not loaded"),
+                )
+            } catch (cancelled: CancellationException) {
+                statusCoordinator.finishAcquisition(
+                    acquisitionId,
+                    unloadedStatus(build.id, "Download cancelled"),
+                )
+                throw cancelled
+            } catch (outOfMemory: OutOfMemoryError) {
+                statusCoordinator.finishAcquisition(
+                    acquisitionId,
+                    unloadedStatus(build.id, "Download interrupted by memory pressure"),
+                )
+                throw outOfMemory
+            } catch (error: Throwable) {
+                val failure = ModelAcquisitionException(build, error)
+                statusCoordinator.finishAcquisition(
+                    acquisitionId,
+                    unloadedStatus(build.id, failure.message.orEmpty()),
+                )
+                throw failure
+            }
+        }
+    }
+
+    private suspend fun loadFirstInstalled(
         onProgress: (Int, String) -> Unit,
     ): LoadedEngine<Engine> {
+        val candidates = installedCandidates()
+        if (candidates.isEmpty()) {
+            val failure = ModelNotInstalledException(preferredBuild)
+            publishUnloaded(preferredBuild.id, failure.message.orEmpty())
+            throw failure
+        }
         val failures = mutableListOf<BackendInitializationException>()
 
-        for (build in startupCandidates()) {
+        for (build in candidates) {
             try {
-                val created = startWith(build, onProgress)
+                val created = startInstalled(build, onProgress)
                 try {
                     rememberSuccessfulBuild(build)
                     reclaimOtherBuilds(build)
-                    _status.value = EngineStatus(
+                    statusCoordinator.publishRuntime(EngineStatus(
                         state = EngineState.READY,
                         modelId = build.id,
                         backend = build.backend.name,
                         downloadPercent = 100,
                         detail = "Ready",
                         modelDownloaded = true,
-                    )
+                    ))
                     reportProgress(onProgress, 100, STAGE_READY)
                     return LoadedEngine(build, created)
                 } catch (error: Throwable) {
@@ -131,12 +184,9 @@ class LiteRtEngine internal constructor(
             } catch (outOfMemory: OutOfMemoryError) {
                 publishOutOfMemory(build.id)
                 throw outOfMemory
-            } catch (acquisition: ModelAcquisitionException) {
-                // A network, storage, or verification failure says nothing about any
-                // backend. Do not relabel it UNSUPPORTED or start another multi-GB
-                // fallback download.
-                publishUnloaded(build.id, acquisition.message.orEmpty())
-                throw acquisition
+            } catch (missing: ModelNotInstalledException) {
+                publishUnloaded(build.id, missing.message.orEmpty())
+                throw missing
             } catch (backend: BackendInitializationException) {
                 Log.w(TAG, "Could not start ${build.id}", backend.cause)
                 failures += backend
@@ -147,47 +197,30 @@ class LiteRtEngine internal constructor(
         }
 
         val failure = NoUsableBackendException(failures)
-        _status.value = EngineStatus(
+        statusCoordinator.publishRuntime(EngineStatus(
             state = EngineState.UNSUPPORTED,
             modelId = preferredBuild.id,
             detail = failure.message.orEmpty(),
             modelDownloaded = hasInstalledCandidate(),
-        )
+        ))
         throw failure
     }
 
-    private suspend fun startWith(
+    private suspend fun startInstalled(
         build: ModelBuild,
         onProgress: (Int, String) -> Unit,
     ): Engine {
         if (!store.isInstalled(build)) {
-            _status.value = EngineStatus(
-                state = EngineState.DOWNLOADING,
-                modelId = build.id,
-                detail = "Downloading ${build.displayName}",
-                modelDownloaded = hasInstalledCandidate(),
-            )
-            try {
-                store.ensureAvailable(build) { progress ->
-                    _status.value = _status.value.copy(downloadPercent = progress.percent)
-                    reportProgress(onProgress, progress.percent, STAGE_DOWNLOADING)
-                }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (outOfMemory: OutOfMemoryError) {
-                throw outOfMemory
-            } catch (error: Throwable) {
-                throw ModelAcquisitionException(build, error)
-            }
+            throw ModelNotInstalledException(preferredBuild)
         }
 
-        _status.value = EngineStatus(
+        statusCoordinator.publishRuntime(EngineStatus(
             state = EngineState.INITIALISING,
             modelId = build.id,
             downloadPercent = 100,
             detail = "Loading ${build.displayName}",
             modelDownloaded = true,
-        )
+        ))
         reportProgress(onProgress, -1, STAGE_INITIALISING)
 
         val startInit = SystemClock.elapsedRealtime()
@@ -234,7 +267,6 @@ class LiteRtEngine internal constructor(
     override fun generate(request: InsightRequest): Flow<String> = flow {
         val startedAt = SystemClock.elapsedRealtime()
         val warm = lifecycle.isReady
-        val hadInstalledModel = hasInstalledCandidate()
         try {
             // Keep the historical timing boundary: prefill begins after preparation, so
             // time spent waiting behind another generation remains visible separately
@@ -242,7 +274,7 @@ class LiteRtEngine internal constructor(
             // will observe the unloaded state and prepare again under the same coordinator.
             prepare()
             val postPrepareAt = SystemClock.elapsedRealtime()
-            lifecycle.use(loader = { loadFirstAvailable { _, _ -> } }) { loaded ->
+            lifecycle.use(loader = { loadFirstInstalled { _, _ -> } }) { loaded ->
                 val config = ConversationConfig(
                     systemInstruction = Contents.of(PromptBuilder.systemInstruction(request)),
                     maxOutputToken = GenerationOutputPolicy.maxOutputTokens(request),
@@ -267,12 +299,12 @@ class LiteRtEngine internal constructor(
                                             lastTimeToFirstTokenMillis = elapsed,
                                             lastPrefillMillis = prefill,
                                             lastRequestWasWarm = warm,
-                                            lastRequestDownloaded = !hadInstalledModel,
+                                            lastRequestDownloaded = false,
                                         )
                                     }
                                     Log.i(
                                         TAG,
-                                        "ttft warm=$warm downloaded=${!hadInstalledModel} " +
+                                        "ttft warm=$warm downloaded=false " +
                                             "totalMs=$elapsed prefillMs=$prefill",
                                     )
                                 }
@@ -291,7 +323,7 @@ class LiteRtEngine internal constructor(
         } catch (outOfMemory: OutOfMemoryError) {
             // The coordinator has already closed and forgotten the poisoned native
             // handle. The artifact and the proven-build preference are deliberately kept.
-            publishOutOfMemory(_status.value.modelId)
+            publishOutOfMemory(status.value.modelId)
             throw outOfMemory
         }
     }.flowOn(Dispatchers.IO)
@@ -310,21 +342,24 @@ class LiteRtEngine internal constructor(
     }
 
     private fun publishUnloaded(modelId: String?, detail: String) {
-        _status.value = EngineStatus(
+        statusCoordinator.publishRuntime(unloadedStatus(modelId, detail))
+    }
+
+    private fun unloadedStatus(modelId: String?, detail: String): EngineStatus =
+        EngineStatus(
             state = EngineState.MODEL_MISSING,
             modelId = modelId,
             detail = detail,
             modelDownloaded = hasInstalledCandidate(),
         )
-    }
 
     private fun publishOutOfMemory(modelId: String?) {
-        _status.value = EngineStatus(
+        statusCoordinator.publishRuntime(EngineStatus(
             state = EngineState.MODEL_MISSING,
             modelId = modelId,
             detail = "Engine released after running out of memory",
             modelDownloaded = hasInstalledCandidate(),
-        )
+        ))
     }
 
     private fun rememberSuccessfulBuild(build: ModelBuild) {
@@ -374,7 +409,6 @@ class LiteRtEngine internal constructor(
 
     companion object {
         private const val TAG = "LiteRtEngine"
-        const val STAGE_DOWNLOADING = "downloading"
         const val STAGE_INITIALISING = "initialising"
         const val STAGE_READY = "ready"
 

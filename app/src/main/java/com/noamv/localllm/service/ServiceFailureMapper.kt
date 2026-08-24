@@ -4,6 +4,7 @@ import com.noamv.localllm.contract.LocalLlmError
 import com.noamv.localllm.engine.BackendInitializationException
 import com.noamv.localllm.engine.GenerationOutputPolicyException
 import com.noamv.localllm.engine.ModelAcquisitionException
+import com.noamv.localllm.engine.ModelNotInstalledException
 import com.noamv.localllm.engine.NoUsableBackendException
 import com.noamv.localllm.model.IncompleteModelDownloadException
 import com.noamv.localllm.model.InsufficientModelStorageException
@@ -42,6 +43,11 @@ internal object ServiceFailureMapper {
             categories.unsupportedBackend -> ServiceFailure(
                 code = LocalLlmError.UNSUPPORTED_DEVICE,
                 message = "No supported model backend is available on this device.",
+                retryable = false,
+            )
+            categories.modelNotInstalled -> ServiceFailure(
+                code = LocalLlmError.MODEL_NOT_READY,
+                message = "No compatible model is installed. Open LocalLLM to download it.",
                 retryable = false,
             )
             categories.insufficientStorage -> ServiceFailure(
@@ -96,6 +102,7 @@ internal object ServiceFailureMapper {
         var cancelled: Boolean = false,
         var outOfMemory: Boolean = false,
         var unsupportedBackend: Boolean = false,
+        var modelNotInstalled: Boolean = false,
         var insufficientStorage: Boolean = false,
         var storage: Boolean = false,
         var checksum: Boolean = false,
@@ -115,6 +122,7 @@ internal object ServiceFailureMapper {
                         is CancellationException -> result.cancelled = true
                         is OutOfMemoryError -> result.outOfMemory = true
                         is NoUsableBackendException -> result.unsupportedBackend = true
+                        is ModelNotInstalledException -> result.modelNotInstalled = true
                         is InsufficientModelStorageException -> result.insufficientStorage = true
                         is ModelStorageException,
                         is ModelPromotionException,

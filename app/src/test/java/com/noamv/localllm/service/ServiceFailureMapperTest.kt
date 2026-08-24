@@ -9,6 +9,7 @@ import com.noamv.localllm.engine.BackendInitializationException
 import com.noamv.localllm.engine.GenerationOutputPolicyException
 import com.noamv.localllm.engine.InferencePriority
 import com.noamv.localllm.engine.ModelAcquisitionException
+import com.noamv.localllm.engine.ModelNotInstalledException
 import com.noamv.localllm.engine.NoUsableBackendException
 import com.noamv.localllm.model.InsufficientModelStorageException
 import com.noamv.localllm.model.IncompleteModelDownloadException
@@ -46,6 +47,17 @@ class ServiceFailureMapperTest {
             LocalLlmError.UNSUPPORTED_DEVICE,
             retryable = false,
         )
+    }
+
+    @Test
+    fun `missing installed artifact is model not ready and never unsupported device`() {
+        val failure = ServiceFailureMapper.map(
+            RuntimeException("wrapper", ModelNotInstalledException(build)),
+        )
+
+        assertEquals(LocalLlmError.MODEL_NOT_READY, failure.code)
+        assertFalse(failure.retryable)
+        assertTrue(failure.message.contains("Open LocalLLM"))
     }
 
     @Test

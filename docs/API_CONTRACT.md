@@ -154,8 +154,11 @@ key is denied even when it can request the manifest permission.
 A successful manifest-permission bind is not authorization. Binding alone performs no
 engine work. The service begins non-downloading prewarm only after the caller passes the
 exact package-and-lineage check on `getApiVersion()`; an authorized generation request
-also prepares on demand. This prevents another package signed with a broadly known client
-certificate from using bind/unbind cycles to force multi-gigabyte model initialization.
+also prepares an already-installed artifact on demand. Status, prewarm, and generation
+cannot initiate acquisition. If no compatible artifact is installed, generation fails
+with `MODEL_NOT_READY`; only the owner action in LocalLLM's manager can download one. This
+prevents another package signed with a broadly known client certificate from using any
+Binder transaction to force a multi-gigabyte transfer.
 
 ## Service scheduling and cancellation
 
@@ -243,7 +246,7 @@ copied files.
 | Code | Meaning | Service categories and retry guidance |
 | --- | --- | --- |
 | 1 | `BUSY` | queue full, queue wait expired, or service closing; retry later |
-| 2 | `MODEL_NOT_READY` | distinct sanitized network, download-protocol, storage, checksum, acquisition or initialization messages; retry after the stated connectivity, storage or repair condition |
+| 2 | `MODEL_NOT_READY` | no compatible installed artifact, or an installed backend could not initialize; open LocalLLM for owner acquisition when missing, otherwise retry after the stated condition |
 | 3 | `CANCELLED` | caller cancellation, callback death or service shutdown; a caller may start a new request |
 | 4 | `INVALID_REQUEST` | malformed, unsupported, unsafe task shape or over-limit input; fix the request |
 | 5 | `OUT_OF_MEMORY` | native allocation failed and the lifecycle owner released the engine; retry after memory pressure falls |
@@ -253,6 +256,8 @@ copied files.
 Version one has no retryable field and cannot add one without changing the copied
 contract. The stable code plus sanitized category message are the available v1 signal;
 internal paths, URLs, digests and exception text are never returned to the client.
+Owner acquisition failures remain manager-local diagnostics because Binder generation
+never crosses the acquisition boundary.
 
 A typed-event client handles these as terminal `Failure` events; the deprecated string
 adapter rethrows their `error`. The service process can still be killed under memory

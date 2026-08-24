@@ -5,6 +5,8 @@ import android.util.Log
 import com.noamv.localllm.engine.InferenceScheduler
 import com.noamv.localllm.engine.LiteRtEngine
 import com.noamv.localllm.engine.LlmEngine
+import com.noamv.localllm.engine.ModelAcquirer
+import com.noamv.localllm.engine.OwnerModelAcquisitionCoordinator
 import com.noamv.localllm.engine.shouldPrewarmOnBind
 import com.noamv.localllm.model.ModelStore
 import kotlinx.coroutines.CancellationException
@@ -47,32 +49,48 @@ class LocalLlmApplication : Application() {
 
     val modelStore: ModelStore by lazy { ModelStore(this, httpClient) }
 
-    private val engineDelegate = lazy<LlmEngine> { LiteRtEngine(this, modelStore) }
+    private val engineDelegate = lazy { LiteRtEngine(this, modelStore) }
     val engine: LlmEngine
+        get() = engineDelegate.value
+    private val modelAcquirer: ModelAcquirer
         get() = engineDelegate.value
 
     /** One admission owner for every native generation role in this process. */
     val inferenceScheduler: InferenceScheduler by lazy { InferenceScheduler(applicationScope) }
 
+    private val ownerAcquisition by lazy {
+        OwnerModelAcquisitionCoordinator(
+            scope = applicationScope,
+            acquireAndPrepare = {
+                modelAcquirer.acquirePreferredArtifact()
+                engine.prepare()
+            },
+            onFailure = { error -> Log.w(TAG, "Owner model acquisition failed", error) },
+        )
+    }
+
     @Volatile
-    private var prepareJob: Job? = null
-    private val prepareJobLock = Any()
+    private var prewarmJob: Job? = null
+    private val prewarmJobLock = Any()
 
     /**
-     * Downloads and loads the model, and keeps going when the user leaves.
+     * Explicit owner action that acquires, then loads, the model and keeps going when the
+     * user leaves.
      *
      * This deliberately does not run in a ViewModel's scope. It used to, and closing the
      * manager screen therefore cancelled a two-gigabyte download part-way through — the
      * single most expensive thing this app does. Repeat calls join the run already in
-     * flight rather than starting a second one; [LlmEngine.prepare] is idempotent, but
-     * queueing redundant calls behind its lock is still wasteful.
+     * flight rather than starting a second one.
      *
      * Progress and failures are published through [engine] status, which the UI observes,
      * so nothing is lost by not returning them here.
      */
-    fun prepareModel(): Job {
-        synchronized(prepareJobLock) {
-            prepareJob?.takeIf { it.isActive }?.let { return it }
+    fun acquireAndPrepareModel(): Job = ownerAcquisition.start()
+
+    /** Process-owned, installed-artifact-only preparation used by authorized prewarm. */
+    private fun prepareInstalledModel(): Job {
+        synchronized(prewarmJobLock) {
+            prewarmJob?.takeIf { it.isActive }?.let { return it }
 
             // Register the lazy job before it can complete. The earlier launch-then-store
             // sequence allowed a fast failure to finish before prepareJob was assigned,
@@ -84,13 +102,13 @@ class LocalLlmApplication : Application() {
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (error: Throwable) {
-                    Log.w(TAG, "Model preparation failed", error)
+                    Log.w(TAG, "Installed model preparation failed", error)
                 }
             }
-            prepareJob = newJob
+            prewarmJob = newJob
             newJob.invokeOnCompletion {
-                synchronized(prepareJobLock) {
-                    if (prepareJob === newJob) prepareJob = null
+                synchronized(prewarmJobLock) {
+                    if (prewarmJob === newJob) prewarmJob = null
                 }
             }
             newJob.start()
@@ -103,14 +121,14 @@ class LocalLlmApplication : Application() {
      * overlaps with the user reading the screen instead of blocking the insight card.
      *
      * Deliberately never downloads: this fires on a bind, and a bind must not be able to
-     * start a multi-gigabyte transfer. When no file is present this does nothing and the
-     * ordinary download-on-demand path in requestInsight still applies.
+     * start a multi-gigabyte transfer. When no file is present this does nothing; only
+     * [acquireAndPrepareModel] may cross the owner acquisition boundary.
      */
     fun prewarmModel() {
         applicationScope.launch {
             // Reading engine.status constructs the engine lazily, which touches the disk.
             // Doing it inside the coroutine keeps that off the binder/main thread.
-            if (shouldPrewarmOnBind(engine.status.value)) prepareModel()
+            if (shouldPrewarmOnBind(engine.status.value)) prepareInstalledModel()
         }
     }
 
@@ -125,7 +143,8 @@ class LocalLlmApplication : Application() {
         // Cancelling process-owned preparation preserves ModelStore's partial download.
         // Native generation itself is not pre-empted: unload waits behind the engine's
         // lifecycle coordinator and closes only after generation reaches a safe boundary.
-        synchronized(prepareJobLock) { prepareJob?.cancel() }
+        ownerAcquisition.cancel()
+        synchronized(prewarmJobLock) { prewarmJob?.cancel() }
         applicationScope.launch { engine.unload() }
     }
 

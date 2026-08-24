@@ -10,6 +10,6 @@ data class EngineTimings(
     val lastPrefillMillis: Long? = null,
     /** True when an engine was already loaded when the request arrived. */
     val lastRequestWasWarm: Boolean? = null,
-    /** True when this request had to download the model first, which inflates TTFT enormously. */
+    /** Historical diagnostic retained internally; installed-only requests now always set false. */
     val lastRequestDownloaded: Boolean = false,
 )
