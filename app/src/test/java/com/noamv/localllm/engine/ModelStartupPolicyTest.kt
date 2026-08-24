@@ -3,6 +3,7 @@ package com.noamv.localllm.engine
 import com.noamv.localllm.model.ModelBuild
 import com.noamv.localllm.model.ModelCatalog
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -32,6 +33,33 @@ class ModelStartupPolicyTest {
 
         assertTrue(recreatedProcess.hasInstalledCandidate())
         assertEquals(ModelCatalog.E2B_CPU.id, recreatedProcess.candidates().first().id)
+        assertEquals(
+            listOf(ModelCatalog.E2B_CPU.id),
+            recreatedProcess.installedCandidates().map { it.id },
+        )
+        assertNull(recreatedProcess.ownerAcquisitionTarget())
+    }
+
+    @Test
+    fun `missing preparation has no candidates and owner acquisition targets only preferred`() {
+        val startup = policy(InMemorySuccessfulBuildStore(), emptySet())
+
+        assertTrue(startup.installedCandidates().isEmpty())
+        assertEquals(ModelCatalog.E2B_GPU.id, startup.ownerAcquisitionTarget()?.id)
+    }
+
+    @Test
+    fun `installed backend failure cannot turn a missing fallback into preparation work`() {
+        val startup = policy(
+            durableStore = InMemorySuccessfulBuildStore(),
+            installed = setOf(ModelCatalog.E2B_GPU.id),
+        )
+
+        assertEquals(
+            listOf(ModelCatalog.E2B_GPU.id),
+            startup.installedCandidates().map { it.id },
+        )
+        assertNull(startup.ownerAcquisitionTarget())
     }
 
     private fun policy(

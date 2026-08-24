@@ -8,6 +8,7 @@ import com.noamv.localllm.engine.InferencePriority
 import com.noamv.localllm.engine.InferenceScheduler
 import com.noamv.localllm.engine.InferenceSchedulerSnapshot
 import com.noamv.localllm.engine.LlmEngine
+import com.noamv.localllm.engine.ModelNotInstalledException
 import com.noamv.localllm.model.ModelCatalog
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -108,6 +109,25 @@ class ManagerViewModelSchedulerTest {
         }
     }
 
+    @Test
+    fun `self-test missing-model failure cannot cross the owner acquisition boundary`() = runTest {
+        withMainDispatcher {
+            val ownerAcquisitions = AtomicInteger()
+            val scheduler = InferenceScheduler(this)
+            val viewModel = viewModel(
+                engine = FakeEngine { flow { throw ModelNotInstalledException(ModelCatalog.E2B_GPU) } },
+                scheduler = scheduler,
+                startOwnerAcquisition = { ownerAcquisitions.incrementAndGet() },
+            )
+
+            viewModel.runSelfTest()
+            advanceUntilIdle()
+
+            assertTrue(viewModel.selfTest.value.orEmpty().contains("not installed"))
+            assertEquals(0, ownerAcquisitions.get())
+        }
+    }
+
     private suspend fun kotlinx.coroutines.test.TestScope.withMainDispatcher(
         block: suspend kotlinx.coroutines.test.TestScope.() -> Unit,
     ) {
@@ -119,10 +139,14 @@ class ManagerViewModelSchedulerTest {
         }
     }
 
-    private fun viewModel(engine: LlmEngine, scheduler: InferenceScheduler) = ManagerViewModel(
+    private fun viewModel(
+        engine: LlmEngine,
+        scheduler: InferenceScheduler,
+        startOwnerAcquisition: () -> Unit = {},
+    ) = ManagerViewModel(
         engine = engine,
         build = ModelCatalog.E2B_GPU,
-        startPreparing = {},
+        startOwnerAcquisition = startOwnerAcquisition,
         scheduler = scheduler,
     )
 

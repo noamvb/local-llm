@@ -243,6 +243,30 @@ class ModelStoreTest {
     }
 
     @Test
+    fun `installed artifact checks do not wait behind an active transfer`() = runBlocking {
+        val prefix = payload.copyOf(7 * 1024)
+        partFile.writeBytes(prefix)
+        val callStarted = CompletableDeferred<Unit>()
+        val callCancelled = CompletableDeferred<Unit>()
+        val store = ModelStore(
+            temporaryFolder.root,
+            clientBlockingUntilCancelled(callStarted, callCancelled),
+        )
+
+        val transfer = launch { store.ensureAvailable(build) }
+        callStarted.await()
+
+        val installed = withTimeout(1_000) {
+            kotlinx.coroutines.withContext(Dispatchers.Default) { store.isInstalled(build) }
+        }
+
+        assertFalse(installed)
+        transfer.cancelAndJoin()
+        withTimeout(2_000) { callCancelled.await() }
+        assertEquals(prefix.toList(), partFile.readBytes().toList())
+    }
+
+    @Test
     fun `concurrent ensure calls share one serialized transfer`() = runTest {
         val callStarted = CompletableDeferred<Unit>()
         val releaseResponse = CompletableDeferred<Unit>()

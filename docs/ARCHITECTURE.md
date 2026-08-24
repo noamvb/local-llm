@@ -14,8 +14,8 @@ as implemented until their feature and release gates complete.
 │   .summarize()         │        │ LocalLlmApplication                │
 │        ↓               │ bind   │   holds LlmEngine for process life │
 │ FactMapper (pure)      │───────▶│ LiteRtEngine → LiteRT-LM 0.16.1    │
-│ LocalLlmClient         │◀───────│ ModelStore (download + SHA-256)    │
-│ Insight card (Compose) │ tokens │ files/models/*.litertlm  (~2 GB)   │
+│ LocalLlmClient         │◀───────│ ModelStore ← owner manager action  │
+│ Insight card (Compose) │ tokens │   (download + SHA-256, ~2 GB)      │
 └────────────────────────┘        └────────────────────────────────────┘
         Cannsheet Mobile ─── same client tree, same service
 ```
@@ -102,16 +102,33 @@ contiguous allocation. Two decisions follow:
   Cancellation or Binder death before/during synchronous registration either prevents
   admission or removes the admitted entry; terminal scheduler state releases that record
   and its death recipient exactly once.
-- `onTrimMemory(TRIM_MEMORY_RUNNING_CRITICAL)` cancels process-owned preparation while
-  preserving any resumable partial download, then schedules a coordinated unload. Paying
-  a reload is better than having the process killed mid-generation.
+- `onTrimMemory(TRIM_MEMORY_RUNNING_CRITICAL)` first invalidates the process-work epoch,
+  then cancels process-owned acquisition and directly registered prewarm work while
+  preserving any resumable partial download. A request captured before trim cannot
+  register late and construct the engine afterward: the shared epoch-aware job slot rejects
+  stale tickets under its coalescing lock, before they can absorb valid post-trim work. Only
+  the coordinated unload is
+  conditional on an engine already existing. Paying a reload is better than having the
+  process killed mid-generation.
+
+Engine preparation and model acquisition are separate types. `LlmEngine.prepare()` and
+`generate()` inspect only compatible artifacts already installed on disk. The Binder
+service, authorized prewarm, status calls, and manager self-test hold only that interface,
+so none can reach `ModelStore.ensureAvailable()`. Missing artifacts fail immediately as
+frozen v1 `MODEL_NOT_READY`, without entering the transfer mutex or waiting behind an
+owner download.
+
+Only the manager's existing owner action holds the acquisition interface. One
+application-owned job coalesces repeated taps, downloads at most the preferred artifact
+when no compatible artifact exists, then calls installed-only preparation. Acquisition
+does not iterate the backend fallback list.
 
 The ID of the last build that initialized successfully is persisted in private app
 preferences. On process recreation, a still-installed compatible proven fallback is tried
-before a missing preferred build. Other installed compatible candidates also precede
-downloads. Acquisition failures remain distinct from backend initialization failures, so
-a network, storage or checksum problem cannot become a permanent unsupported-device state
-or trigger another fallback download.
+before other installed compatible candidates. Missing candidates are excluded from engine
+preparation entirely. A missing artifact is not a backend failure and can never become
+`UNSUPPORTED_DEVICE`; a backend failure may fall through only to another already-installed
+compatible artifact. Neither failure starts a fallback download.
 
 A fresh `Conversation` is created per request. Conversations are cheap and this keeps
 state from leaking between the two client apps. Its LiteRT configuration has a hard
@@ -138,6 +155,16 @@ SHA-256 taken from the HuggingFace LFS metadata and verified after download.
 
 ## Model acquisition durability
 
+Acquisition is an explicit owner-started manager action. Its application-owned job survives
+screen recreation, coalesces repeated taps, and is independent of the native-engine
+lifecycle lock so a missing-model client request never waits behind a multi-gigabyte
+transfer. Critical memory trim invalidates tickets captured by owner acquisition and
+prewarm before cancelling both registered jobs, so scheduling delay cannot resurrect
+pre-trim work. Both paths use the same job-slot primitive, which rejects a stale ticket
+synchronously before it can occupy the slot or coalesce a current request. Durable
+process-death transfer and a foreground-service handoff remain
+outside this Stage 1 boundary.
+
 One coroutine-owned transfer coordinator serializes download, deletion, and pruning
 mutations. Cancelling a transfer immediately cancels its active OkHttp call, including a
 blocked connection or body read, then retains every safely written partial byte. A delete
@@ -162,6 +189,12 @@ same-volume replacement, so the previous known-good target remains installed unt
 replacement is both complete and verified. Cancellation or out-of-memory during
 verification/promotion preserves the recoverable partial and never converts an
 `OutOfMemoryError` into an ordinary acquisition failure.
+
+Public status has two explicit owners. Native runtime status is durable; active owner
+acquisition is a temporary overlay while the runtime is unloaded. A concurrent client
+missing-model failure therefore cannot erase download progress, and acquisition completion
+after atomic promotion cannot overwrite `INITIALISING` or `READY` published by a client
+that already observed the new artifact.
 
 ## What is deliberately absent from version one
 

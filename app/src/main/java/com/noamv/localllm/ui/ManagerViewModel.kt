@@ -37,7 +37,7 @@ import java.util.concurrent.atomic.AtomicReference
 class ManagerViewModel(
     private val engine: LlmEngine,
     private val build: ModelBuild,
-    private val startPreparing: () -> Unit,
+    private val startOwnerAcquisition: () -> Unit,
     private val scheduler: InferenceScheduler,
 ) : ViewModel() {
 
@@ -54,12 +54,12 @@ class ManagerViewModel(
     val chipset: String? get() = LiteRtEngine.boardPlatform()
 
     /**
-     * Starts the download and load on the application scope rather than
+     * Starts the explicit owner download-and-load action on the application scope rather than
      * [viewModelScope], so that closing this screen does not abandon a multi-gigabyte
      * transfer. Progress and any failure arrive through [status], which the screen
      * already renders.
      */
-    fun prepare() = startPreparing()
+    fun prepare() = startOwnerAcquisition()
 
     /**
      * Exercises the whole pipeline with fixed facts, so the owner can tell the model is
@@ -169,7 +169,7 @@ class ManagerViewModel(
                         board = LiteRtEngine.boardPlatform(),
                         npuDispatchAvailable = LiteRtEngine.hasNpuDispatchLibraries(app),
                     ),
-                    startPreparing = { app.prepareModel() },
+                    startOwnerAcquisition = { app.acquireAndPrepareModel() },
                     scheduler = app.inferenceScheduler,
                 )
             }

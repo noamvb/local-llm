@@ -2,6 +2,49 @@
 
 Durable choices and the evidence behind them. Newest first.
 
+## 2026-08-23 — Only the owner manager may acquire a model
+
+**Decision.** Separate acquisition from native-engine preparation at the type boundary.
+`LlmEngine.prepare()` and `generate()` use compatible installed artifacts only. Binder
+status, authorized prewarm, generation, and the manager self-test hold only `LlmEngine` and
+cannot call `ModelStore.ensureAvailable()`. A separate internal acquisition interface is
+wired only to the manager's existing owner action through one application-owned job that
+coalesces repeated taps, acquires at most the preferred artifact when none is installed,
+then calls installed-only preparation.
+
+When no compatible artifact is installed, preparation throws a dedicated missing-artifact
+failure that maps to frozen v1 `MODEL_NOT_READY`, never `UNSUPPORTED_DEVICE`. It checks
+installed-file truth without taking the transfer mutex, so a client request concurrent with
+an owner download fails promptly instead of waiting behind it. Backend fallback iteration
+contains only already-installed compatible builds. A failed backend or failed acquisition
+never starts another multi-gigabyte fallback download.
+
+Runtime and acquisition status have explicit arbitration. Download state temporarily
+overlays an unloaded runtime, so a concurrent missing client cannot erase owner progress.
+After atomic promotion, `INITIALISING` or `READY` published by a client wins over a late
+acquisition completion. Cancellation propagates into ModelStore and preserves its safe
+partial bytes; the public state continues to report `modelDownloaded=false` until a complete
+verified artifact is installed.
+
+Owner acquisition and authorized prewarm capture a process-work epoch before registering.
+Critical memory trim advances that epoch before cancelling both directly registered jobs,
+so work requested before trim cannot register late and construct an engine or start a
+transfer afterward. The same epoch-aware job slot owns owner acquisition and prewarm; it
+rejects stale tickets under its coalescing lock before they can occupy the active slot or
+absorb valid post-trim work. The engine-existence guard applies only to coordinated unload,
+never to cancellation.
+
+**Why.** A policy check around a download-capable `prepare()` did not make the boundary
+true: generation still called the same method and could start network work, while manager
+acquisition and client preparation could overwrite each other's status. A compile-time
+split makes the security, latency, and ownership rule reviewable.
+
+**Consequences.** Existing proven/compatible installed fallback order and known-good files
+are preserved. The owner action remains process-owned but is not yet a foreground service
+or durable process-death transfer; networking policy, repair/delete UI, role-aware v2
+storage, and device acquisition tests remain later work. The v1 AIDL, JSON, and error-code
+values are unchanged.
+
 ## 2026-08-23 — Bound v1 service work before native inference
 
 **Decision.** Put every cross-app v1 generation and the manager self-test through one
@@ -270,6 +313,10 @@ clients; publication does not authorize production installation, launch, data ac
 device actions.
 
 ## 2026-08-19 — Split time-to-first-token telemetry and track download status
+
+**Superseded request-download detail (2026-08-23).** Requests are now installed-only and
+always record `lastRequestDownloaded=false`. Acquisition progress remains manager state,
+outside request TTFT.
 
 **Decision.** `EngineTimings` records both total time-to-first-token (`lastTimeToFirstTokenMillis`) and the post-preparation prefill segment (`lastPrefillMillis`), alongside a flag indicating whether the request triggered a model download (`lastRequestDownloaded`). Logcat and the manager screen distinguish pure prefill latency from download and model initialisation overhead.
 
