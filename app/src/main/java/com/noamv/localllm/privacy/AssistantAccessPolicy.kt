@@ -52,8 +52,8 @@ class AssistantAccessPolicy(
         if (!master) return false
 
         return when {
-            packageName.contains("cannsheet") -> cannsheetEnabled.first()
-            packageName.contains("poop") -> poopScheduleEnabled.first()
+            packageName.startsWith("com.example.cannsheet") || packageName.contains("cannsheet") -> cannsheetEnabled.first()
+            packageName.startsWith("com.noamv.poopschedule") || packageName.contains("poop") -> poopScheduleEnabled.first()
             else -> true
         }
     }
