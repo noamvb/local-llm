@@ -160,6 +160,12 @@ with `MODEL_NOT_READY`; only the owner action in LocalLLM's manager can download
 prevents another package signed with a broadly known client certificate from using any
 Binder transaction to force a multi-gigabyte transfer.
 
+That owner action is implemented by a separate private, non-sticky `dataSync` foreground
+service. It is not part of the AIDL service, does not change a v1 transaction or JSON field,
+and cannot be started through status, warmup, generation, self-test, binding, boot, service
+restart, or process recreation. Network policy, transfer bytes/stages, and acquisition
+failures remain manager-internal typed state rather than new v1 wire values.
+
 ## Service scheduling and cancellation
 
 The process admits at most one active generation and two waiting requests, including the

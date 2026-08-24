@@ -1,21 +1,35 @@
 package com.noamv.localllm
 
 import android.app.Application
+import android.net.Network
 import android.util.Log
+import com.noamv.localllm.engine.ArtifactAcquisitionStage
 import com.noamv.localllm.engine.EpochProcessJobCoordinator
 import com.noamv.localllm.engine.InferenceScheduler
 import com.noamv.localllm.engine.LiteRtEngine
 import com.noamv.localllm.engine.LlmEngine
+import com.noamv.localllm.engine.ModelAcquisitionTransport
 import com.noamv.localllm.engine.ModelAcquirer
-import com.noamv.localllm.engine.OwnerModelAcquisitionCoordinator
 import com.noamv.localllm.engine.ProcessWorkEpoch
 import com.noamv.localllm.engine.shouldPrewarmOnBind
 import com.noamv.localllm.model.ModelStore
+import com.noamv.localllm.transfer.ForegroundTransferCancellationRegistry
+import com.noamv.localllm.transfer.ModelRole
+import com.noamv.localllm.transfer.ModelTransferDescriptor
+import com.noamv.localllm.transfer.ModelTransferPhase
+import com.noamv.localllm.transfer.ModelTransferStatus
+import com.noamv.localllm.transfer.ModelTransferStatusCoordinator
+import com.noamv.localllm.transfer.TransferNetworkPolicy
+import com.noamv.localllm.transfer.TransferStopReason
+import com.noamv.localllm.transfer.findTransferNetworkBlockReason
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import okhttp3.Call
+import okhttp3.Dns
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
 
@@ -47,6 +61,17 @@ class LocalLlmApplication : Application() {
             .build()
     }
 
+    internal fun pinnedTransferCallFactory(network: Network): Call.Factory =
+        httpClient.newBuilder()
+            .socketFactory(network.socketFactory)
+            .dns(object : Dns {
+                override fun lookup(hostname: String) = network.getAllByName(hostname).toList()
+            })
+            // A transfer is pinned to one approved Network. Transparent retry could
+            // otherwise recreate a request after that network lost eligibility.
+            .retryOnConnectionFailure(false)
+            .build()
+
     val modelStore: ModelStore by lazy { ModelStore(this, httpClient) }
 
     private val engineDelegate = lazy { LiteRtEngine(this, modelStore) }
@@ -55,28 +80,37 @@ class LocalLlmApplication : Application() {
     private val modelAcquirer: ModelAcquirer
         get() = engineDelegate.value
 
+    private val preferredBuild
+        get() = engineDelegate.value.preferredBuild
+
+    private val transferStatusCoordinator by lazy {
+        ModelTransferStatusCoordinator(
+            ModelTransferDescriptor(
+                role = ModelRole.WRITER,
+                modelId = preferredBuild.id,
+                modelName = preferredBuild.displayName,
+                expectedBytes = preferredBuild.sizeBytes,
+            ),
+        )
+    }
+
+    internal val modelTransferStatus: StateFlow<ModelTransferStatus>
+        get() = transferStatusCoordinator.status
+
+    internal val foregroundTransferCancellation = ForegroundTransferCancellationRegistry()
+
     /** One admission owner for every native generation role in this process. */
     val inferenceScheduler: InferenceScheduler by lazy { InferenceScheduler(applicationScope) }
 
     private val processWorkEpoch = ProcessWorkEpoch()
-
-    private val ownerAcquisition by lazy {
-        OwnerModelAcquisitionCoordinator(
-            scope = applicationScope,
-            workEpoch = processWorkEpoch,
-            acquireAndPrepare = {
-                modelAcquirer.acquirePreferredArtifact()
-                engine.prepare()
-            },
-            onFailure = { error -> Log.w(TAG, "Owner model acquisition failed", error) },
-        )
-    }
 
     private val installedPrewarm by lazy {
         EpochProcessJobCoordinator(
             scope = applicationScope,
             workEpoch = processWorkEpoch,
             work = {
+                // Even reading engine status can initialize the lazy engine and inspect
+                // model storage. Keep that work off the Binder/main caller thread.
                 if (shouldPrewarmOnBind(engine.status.value)) engine.prepare()
             },
             onFailure = { error -> Log.w(TAG, "Installed model preparation failed", error) },
@@ -84,21 +118,91 @@ class LocalLlmApplication : Application() {
     }
 
     /**
-     * Explicit owner action that acquires, then loads, the model and keeps going when the
-     * user leaves.
-     *
-     * This deliberately does not run in a ViewModel's scope. It used to, and closing the
-     * manager screen therefore cancelled a two-gigabyte download part-way through — the
-     * single most expensive thing this app does. Repeat calls join the run already in
-     * flight rather than starting a second one.
-     *
-     * Progress and failures are published through [engine] status, which the UI observes,
-     * so nothing is lost by not returning them here.
+     * Begins typed status after the foreground service is visible. Returns false when a
+     * compatible installed build already satisfies the action; no network interface is
+     * reached in that case.
      */
-    fun acquireAndPrepareModel(): Job {
-        val ticket = processWorkEpoch.ticket()
-        return ownerAcquisition.start(ticket)
+    internal fun beginOwnerModelTransfer(
+        sessionId: Long,
+        policy: TransferNetworkPolicy,
+    ): Boolean {
+        val engineStatus = engine.status.value
+        val selectedBuild = if (engineStatus.modelDownloaded) {
+            engineStatus.modelId?.let(com.noamv.localllm.model.ModelCatalog::byId)
+                ?: preferredBuild
+        } else {
+            preferredBuild
+        }
+        transferStatusCoordinator.begin(
+            sessionId = sessionId,
+            policy = policy,
+            activeDescriptor = ModelTransferDescriptor(
+                role = ModelRole.WRITER,
+                modelId = selectedBuild.id,
+                modelName = selectedBuild.displayName,
+                expectedBytes = selectedBuild.sizeBytes,
+            ),
+            partialBytes = modelStore.partialBytes(selectedBuild),
+        )
+        if (engineStatus.modelDownloaded) {
+            transferStatusCoordinator.publish(
+                sessionId = sessionId,
+                phase = ModelTransferPhase.COMPLETED,
+                availableBytes = selectedBuild.sizeBytes,
+            )
+            return false
+        }
+        return true
     }
+
+    internal suspend fun performOwnerModelTransfer(
+        sessionId: Long,
+        transport: ModelAcquisitionTransport,
+    ) {
+        try {
+            modelAcquirer.acquirePreferredArtifact(transport) { progress ->
+                transferStatusCoordinator.publish(
+                    sessionId = sessionId,
+                    phase = when (progress.stage) {
+                        ArtifactAcquisitionStage.DOWNLOADING -> ModelTransferPhase.DOWNLOADING
+                        ArtifactAcquisitionStage.VERIFYING -> ModelTransferPhase.VERIFYING
+                        ArtifactAcquisitionStage.INSTALLING -> ModelTransferPhase.INSTALLING
+                    },
+                    availableBytes = progress.availableBytes,
+                    transferredThisRunBytes = progress.transferredThisRunBytes,
+                )
+            }
+            transferStatusCoordinator.publish(
+                sessionId = sessionId,
+                phase = ModelTransferPhase.COMPLETED,
+                availableBytes = modelTransferStatus.value.descriptor.expectedBytes,
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            val policyReason = findTransferNetworkBlockReason(error)
+            if (policyReason != null) {
+                transferStatusCoordinator.block(sessionId, policyReason)
+            } else {
+                transferStatusCoordinator.fail(sessionId, error)
+            }
+            throw error
+        }
+    }
+
+    internal fun publishOwnerTransferCancelled(sessionId: Long, reason: TransferStopReason) =
+        transferStatusCoordinator.cancel(sessionId, reason)
+
+    internal fun publishOwnerTransferPolicyBlocked(
+        sessionId: Long,
+        reason: com.noamv.localllm.transfer.TransferNetworkBlockReason,
+    ) = transferStatusCoordinator.block(sessionId, reason)
+
+    internal fun publishOwnerTransferSetupFailed(
+        sessionId: Long,
+        policy: TransferNetworkPolicy,
+        error: Throwable,
+    ) = transferStatusCoordinator.failSetup(sessionId, policy, error)
 
     /**
      * Loads an already-downloaded model ahead of the first request, so Engine.initialize()
@@ -106,13 +210,19 @@ class LocalLlmApplication : Application() {
      *
      * Deliberately never downloads: this fires on a bind, and a bind must not be able to
      * start a multi-gigabyte transfer. When no file is present this does nothing; only
-     * [acquireAndPrepareModel] may cross the owner acquisition boundary.
+     * the explicit foreground transfer service may cross the owner acquisition boundary.
      */
     fun prewarmModel() {
         val ticket = processWorkEpoch.ticket()
         // Registration is synchronous, but engine/status disk work remains inside the
         // process coroutine. This lets critical trim cancel the complete request instead
         // of racing an untracked wrapper that could register preparation afterward.
+        installedPrewarm.start(ticket)
+    }
+
+    /** Explicit manager action that loads installed artifacts and has no acquisition type. */
+    internal fun prepareInstalledModel() {
+        val ticket = processWorkEpoch.ticket()
         installedPrewarm.start(ticket)
     }
 
@@ -124,11 +234,11 @@ class LocalLlmApplication : Application() {
         super.onTrimMemory(level)
         if (level < TRIM_MEMORY_RUNNING_CRITICAL) return
 
-        // Cancelling process-owned preparation preserves ModelStore's partial download.
-        // Native generation itself is not pre-empted: unload waits behind the engine's
-        // lifecycle coordinator and closes only after generation reaches a safe boundary.
+        // The service-owned transfer Job is cancelled synchronously through its registry;
+        // ModelStore then retains safely written partial bytes. Native generation itself
+        // is not pre-empted: unload waits for a safe lifecycle boundary.
         processWorkEpoch.invalidate()
-        ownerAcquisition.cancel()
+        foregroundTransferCancellation.cancel(TransferStopReason.CRITICAL_MEMORY)
         installedPrewarm.cancel()
         if (!engineDelegate.isInitialized()) return
         applicationScope.launch { engine.unload() }

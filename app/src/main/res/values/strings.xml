@@ -4,4 +4,7 @@
     <string name="permission_inference_description">Allows an approved app with a verified signing certificate to send pre-computed statistics to the local model and receive a written summary. Nothing leaves the device.</string>
     <string name="notification_channel_engine">Model activity</string>
     <string name="notification_channel_engine_description">Shows when the model is downloading or generating.</string>
+    <string name="notification_channel_transfer">Model transfer</string>
+    <string name="notification_channel_transfer_description">Shows the owner-started model download, verification, and installation.</string>
+    <string name="model_transfer_cancel">Cancel transfer</string>
 </resources>

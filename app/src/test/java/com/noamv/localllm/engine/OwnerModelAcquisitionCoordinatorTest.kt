@@ -13,17 +13,17 @@ import org.junit.Test
 import java.util.concurrent.atomic.AtomicInteger
 
 @OptIn(ExperimentalCoroutinesApi::class)
-class OwnerModelAcquisitionCoordinatorTest {
+class ProcessWorkEpochTest {
     @Test
-    fun `repeated owner taps share one active acquisition and a later tap may retry`() = runTest {
+    fun `repeated starts share one active job and a later start may retry`() = runTest {
         val calls = AtomicInteger()
         val firstStarted = CompletableDeferred<Unit>()
         val releaseFirst = CompletableDeferred<Unit>()
         val workEpoch = ProcessWorkEpoch()
-        val coordinator = OwnerModelAcquisitionCoordinator(
+        val coordinator = EpochProcessJobCoordinator(
             scope = this,
             workEpoch = workEpoch,
-            acquireAndPrepare = {
+            work = {
                 if (calls.incrementAndGet() == 1) {
                     firstStarted.complete(Unit)
                     releaseFirst.await()
@@ -38,7 +38,6 @@ class OwnerModelAcquisitionCoordinatorTest {
 
         assertSame(first, repeated)
         assertEquals(1, calls.get())
-
         releaseFirst.complete(Unit)
         advanceUntilIdle()
         coordinator.start()
@@ -47,15 +46,15 @@ class OwnerModelAcquisitionCoordinatorTest {
     }
 
     @Test
-    fun `cancellation reaches acquisition without clearing its resumable partial state`() = runTest {
+    fun `cancellation reaches active work without wrapping it as failure`() = runTest {
         val started = CompletableDeferred<Unit>()
-        var retainedPartialBytes = 0
+        var retainedState = 0
         val workEpoch = ProcessWorkEpoch()
-        val coordinator = OwnerModelAcquisitionCoordinator(
+        val coordinator = EpochProcessJobCoordinator(
             scope = this,
             workEpoch = workEpoch,
-            acquireAndPrepare = {
-                retainedPartialBytes = 4096
+            work = {
+                retainedState = 4096
                 started.complete(Unit)
                 awaitCancellation()
             },
@@ -69,47 +68,7 @@ class OwnerModelAcquisitionCoordinatorTest {
         job.join()
 
         assertTrue(job.isCancelled)
-        assertEquals(4096, retainedPartialBytes)
-    }
-
-    @Test
-    fun `stale owner request cannot absorb valid post-trim acquisition`() = runTest {
-        val workEpoch = ProcessWorkEpoch()
-        val calls = AtomicInteger()
-        val coordinator = OwnerModelAcquisitionCoordinator(
-            scope = this,
-            workEpoch = workEpoch,
-            acquireAndPrepare = { calls.incrementAndGet() },
-            onFailure = { throw AssertionError("unexpected failure", it) },
-        )
-        val preTrimTicket = workEpoch.ticket()
-
-        workEpoch.invalidate()
-        val staleJob = coordinator.start(preTrimTicket)
-        val currentJob = coordinator.start()
-        advanceUntilIdle()
-
-        assertTrue(staleJob.isCompleted)
-        assertTrue(currentJob.isCompleted)
-        assertEquals(1, calls.get())
-    }
-
-    @Test
-    fun `request captured after critical trim may start normally`() = runTest {
-        val workEpoch = ProcessWorkEpoch()
-        val calls = AtomicInteger()
-        val coordinator = OwnerModelAcquisitionCoordinator(
-            scope = this,
-            workEpoch = workEpoch,
-            acquireAndPrepare = { calls.incrementAndGet() },
-            onFailure = { throw AssertionError("unexpected failure", it) },
-        )
-
-        workEpoch.invalidate()
-        coordinator.start()
-        advanceUntilIdle()
-
-        assertEquals(1, calls.get())
+        assertEquals(4096, retainedState)
     }
 
     @Test
@@ -131,6 +90,24 @@ class OwnerModelAcquisitionCoordinatorTest {
 
         assertTrue(staleJob.isCompleted)
         assertTrue(currentJob.isCompleted)
+        assertEquals(1, calls.get())
+    }
+
+    @Test
+    fun `request captured after critical trim starts normally`() = runTest {
+        val workEpoch = ProcessWorkEpoch()
+        val calls = AtomicInteger()
+        val coordinator = EpochProcessJobCoordinator(
+            scope = this,
+            workEpoch = workEpoch,
+            work = { calls.incrementAndGet() },
+            onFailure = { throw AssertionError("unexpected failure", it) },
+        )
+
+        workEpoch.invalidate()
+        coordinator.start()
+        advanceUntilIdle()
+
         assertEquals(1, calls.get())
     }
 }

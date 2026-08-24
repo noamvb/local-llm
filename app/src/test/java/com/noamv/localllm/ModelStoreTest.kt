@@ -13,6 +13,7 @@ import com.noamv.localllm.model.ModelDownloadTooLargeException
 import com.noamv.localllm.model.ModelNetworkException
 import com.noamv.localllm.model.ModelPromotionException
 import com.noamv.localllm.model.ModelStore
+import com.noamv.localllm.model.ModelStoreTransferStage
 import com.noamv.localllm.model.ModelStorageException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -87,6 +88,7 @@ class ModelStoreTest {
     fun `a complete partial verifies and promotes without a network request`() = runTest {
         partFile.writeBytes(payload)
         val calls = AtomicInteger()
+        val validations = AtomicInteger()
         val store = ModelStore(
             temporaryFolder.root,
             scriptedClient { request, _ ->
@@ -95,9 +97,13 @@ class ModelStoreTest {
             },
         )
 
-        val file = store.ensureAvailable(build)
+        val file = store.ensureAvailableWithTransport(
+            build = build,
+            validateNetwork = { validations.incrementAndGet() },
+        )
 
         assertEquals(0, calls.get())
+        assertEquals(0, validations.get())
         assertTrue(store.isInstalled(build))
         assertEquals(payload.toList(), file.readBytes().toList())
         assertFalse(partFile.exists())
@@ -157,6 +163,91 @@ class ModelStoreTest {
             requests.map { it.header("Range") },
         )
         assertEquals(payload.toList(), file.readBytes().toList())
+        assertFalse(partFile.exists())
+    }
+
+    @Test
+    fun `network lease is revalidated before every bounded response`() = runTest {
+        val chunkBytes = 16 * 1024
+        val validations = AtomicInteger()
+        val requests = mutableListOf<Request>()
+        val store = ModelStore(
+            temporaryFolder.root,
+            scriptedClient(requests) { request, _ ->
+                val start = request.header("Range")
+                    ?.removePrefix("bytes=")
+                    ?.removeSuffix("-")
+                    ?.toInt()
+                    ?: 0
+                val endExclusive = minOf(start + chunkBytes, payload.size)
+                response(
+                    request = request,
+                    code = 206,
+                    body = payload.copyOfRange(start, endExclusive),
+                    contentRange = "bytes $start-${endExclusive - 1}/${payload.size}",
+                )
+            },
+        )
+
+        store.ensureAvailableWithTransport(
+            build = build,
+            validateNetwork = { validations.incrementAndGet() },
+        )
+
+        assertEquals(4, requests.size)
+        assertEquals(requests.size, validations.get())
+    }
+
+    @Test
+    fun `closed network lease prevents creation of the next chunk request`() = runTest {
+        val chunkBytes = 16 * 1024
+        val validations = AtomicInteger()
+        val requests = mutableListOf<Request>()
+        val store = ModelStore(
+            temporaryFolder.root,
+            scriptedClient(requests) { request, _ ->
+                response(
+                    request = request,
+                    code = 206,
+                    body = payload.copyOfRange(0, chunkBytes),
+                    contentRange = "bytes 0-${chunkBytes - 1}/${payload.size}",
+                )
+            },
+        )
+
+        val failure = runCatching {
+            store.ensureAvailableWithTransport(
+                build = build,
+                validateNetwork = {
+                    if (validations.incrementAndGet() > 1) {
+                        throw IOException("lease closed")
+                    }
+                },
+            )
+        }.exceptionOrNull()
+
+        assertTrue(failure is IOException)
+        assertEquals(2, validations.get())
+        assertEquals(1, requests.size)
+        assertEquals(chunkBytes.toLong(), partFile.length())
+    }
+
+    @Test
+    fun `transfer stages expose verification and atomic installation`() = runTest {
+        val stages = mutableListOf<ModelStoreTransferStage>()
+        val store = ModelStore(temporaryFolder.root, clientServing(payload))
+
+        store.ensureAvailableWithTransport(build = build, onStage = stages::add)
+
+        assertEquals(
+            listOf(
+                ModelStoreTransferStage.DOWNLOADING,
+                ModelStoreTransferStage.VERIFYING,
+                ModelStoreTransferStage.INSTALLING,
+            ),
+            stages,
+        )
+        assertTrue(store.isInstalled(build))
         assertFalse(partFile.exists())
     }
 
@@ -391,6 +482,30 @@ class ModelStoreTest {
             assertTrue("a server reset must not move progress backwards", after.bytesRead >= before.bytesRead)
             assertTrue(after.percent >= before.percent)
         }
+        assertTrue(progress.any { it.actualBytes == 0L && it.bytesRead == prefixBytes.toLong() })
+        assertEquals(payload.size.toLong(), progress.last().transferredThisRunBytes)
+    }
+
+    @Test
+    fun `many writes within one percent count network bytes exactly once`() = runTest {
+        val largePayload = ByteArray(1024 * 1024) { (it % 251).toByte() }
+        val largeBuild = buildFor(largePayload, "subpercent-accounting")
+        val progress = mutableListOf<DownloadProgress>()
+        val store = ModelStore(
+            temporaryFolder.root,
+            scriptedClient { request, _ ->
+                responseFromStream(
+                    request = request,
+                    stream = FixedChunkStream(largePayload, 4 * 1024),
+                    declaredLength = largePayload.size.toLong(),
+                )
+            },
+        )
+
+        store.ensureAvailable(largeBuild, progress::add)
+
+        assertEquals(largePayload.size.toLong(), progress.last().transferredThisRunBytes)
+        assertTrue(progress.size <= 101)
     }
 
     @Test
@@ -407,7 +522,13 @@ class ModelStoreTest {
 
         assertEquals(DownloadProgress(0, largePayload.size.toLong(), 0), progress.first())
         assertEquals(
-            DownloadProgress(largePayload.size.toLong(), largePayload.size.toLong(), 100),
+            DownloadProgress(
+                bytesRead = largePayload.size.toLong(),
+                totalBytes = largePayload.size.toLong(),
+                percent = 100,
+                actualBytes = largePayload.size.toLong(),
+                transferredThisRunBytes = largePayload.size.toLong(),
+            ),
             progress.last(),
         )
         assertTrue("integer percent coalescing should cap events", progress.size <= 101)
@@ -943,6 +1064,26 @@ private class ChunkedStream(
     private companion object {
         const val CHUNK_BYTES = 4096
         const val SETTLE_MILLIS = 5L
+    }
+}
+
+private class FixedChunkStream(
+    private val body: ByteArray,
+    private val chunkBytes: Int,
+) : InputStream() {
+    private var position = 0
+
+    override fun read(): Int {
+        val single = ByteArray(1)
+        return if (read(single, 0, 1) == -1) -1 else single[0].toInt() and 0xff
+    }
+
+    override fun read(destination: ByteArray, offset: Int, length: Int): Int {
+        if (position >= body.size) return -1
+        val count = minOf(length, chunkBytes, body.size - position)
+        body.copyInto(destination, offset, position, position + count)
+        position += count
+        return count
     }
 }
 

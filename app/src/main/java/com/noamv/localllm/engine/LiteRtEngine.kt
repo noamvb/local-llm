@@ -17,6 +17,7 @@ import com.noamv.localllm.model.ModelBackend
 import com.noamv.localllm.model.ModelBuild
 import com.noamv.localllm.model.ModelCatalog
 import com.noamv.localllm.model.ModelStore
+import com.noamv.localllm.model.ModelStoreTransferStage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -43,7 +44,7 @@ import java.io.File
  * unload. [EngineLifecycleCoordinator] is the sole owner of that instance: preparation,
  * generation, memory trimming, and close can never touch the native handle concurrently.
  */
-class LiteRtEngine internal constructor(
+internal class LiteRtEngine internal constructor(
     private val context: Context,
     private val store: ModelStore,
     private val successfulBuildStore: SuccessfulModelBuildStore,
@@ -105,7 +106,10 @@ class LiteRtEngine internal constructor(
         }
     }
 
-    override suspend fun acquirePreferredArtifact() {
+    override suspend fun acquirePreferredArtifact(
+        transport: ModelAcquisitionTransport,
+        onProgress: (ArtifactAcquisitionProgress) -> Unit,
+    ) {
         acquisitionLock.withLock {
             val build = startupPolicy.ownerAcquisitionTarget() ?: return
             val acquisitionId = statusCoordinator.beginAcquisition(
@@ -117,9 +121,36 @@ class LiteRtEngine internal constructor(
                 ),
             )
             try {
-                store.ensureAvailable(build) { progress ->
-                    statusCoordinator.publishAcquisitionProgress(acquisitionId, progress.percent)
-                }
+                var transferredThisRunBytes = 0L
+                store.ensureAvailableWithTransport(
+                    build = build,
+                    callFactory = transport.callFactory,
+                    validateNetwork = transport.validateNetwork,
+                    onStage = { stage ->
+                        onProgress(
+                            ArtifactAcquisitionProgress(
+                                build = build,
+                                stage = stage.toArtifactStage(),
+                                availableBytes = store.partialBytes(build),
+                                totalBytes = build.sizeBytes,
+                                transferredThisRunBytes = transferredThisRunBytes,
+                            ),
+                        )
+                    },
+                    onProgress = { progress ->
+                        transferredThisRunBytes = progress.transferredThisRunBytes
+                        statusCoordinator.publishAcquisitionProgress(acquisitionId, progress.percent)
+                        onProgress(
+                            ArtifactAcquisitionProgress(
+                                build = build,
+                                stage = ArtifactAcquisitionStage.DOWNLOADING,
+                                availableBytes = progress.actualBytes,
+                                totalBytes = progress.totalBytes,
+                                transferredThisRunBytes = progress.transferredThisRunBytes,
+                            ),
+                        )
+                    },
+                )
                 statusCoordinator.finishAcquisition(
                     acquisitionId,
                     unloadedStatus(build.id, "Downloaded; not loaded"),
@@ -145,6 +176,12 @@ class LiteRtEngine internal constructor(
                 throw failure
             }
         }
+    }
+
+    private fun ModelStoreTransferStage.toArtifactStage(): ArtifactAcquisitionStage = when (this) {
+        ModelStoreTransferStage.DOWNLOADING -> ArtifactAcquisitionStage.DOWNLOADING
+        ModelStoreTransferStage.VERIFYING -> ArtifactAcquisitionStage.VERIFYING
+        ModelStoreTransferStage.INSTALLING -> ArtifactAcquisitionStage.INSTALLING
     }
 
     private suspend fun loadFirstInstalled(

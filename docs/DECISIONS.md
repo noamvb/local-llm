@@ -2,7 +2,58 @@
 
 Durable choices and the evidence behind them. Newest first.
 
+## 2026-08-23 — A private foreground service owns explicit model transfer
+
+**Decision.** Only a visible owner action in LocalLLM starts model acquisition. That tap
+immediately starts a non-exported `dataSync` foreground service, and the service promotes
+itself before inspecting model storage, network state, or transfer state. The service owns
+the actual acquisition coroutine and cancellation boundary, returns `START_NOT_STICKY`,
+rejects null/retry starts, and uses a five-hour deadline below Android's data-sync limit.
+It stops after SHA-256 verification and atomic promotion; model initialization remains a
+separate installed-only action. Process death may retain a resumable partial but never
+restarts it without another explicit owner action.
+
+Default admission requires one exact active Android `Network` that is validated,
+internet-capable, unmetered, and Wi-Fi. A confirmed one-transfer override relaxes only the
+unmetered/Wi-Fi conditions and is not persisted. OkHttp is pinned to the approved network's
+socket factory and DNS, with transparent retry disabled. A lease-bound call factory makes
+call creation atomic with a one-way policy fence; invalidation synchronously cancels every
+call registered by that run. A complete retained partial instead takes ModelStore's
+network-free verification and promotion path. Cancellation, critical trim, policy loss,
+service destruction, setup failure, and timeout all end in typed manager-only state and
+cannot promote incomplete data.
+
+The transfer notification contains checked-in neutral labels, model role/name, exact
+expected/partial/cumulative-transferred/remaining bytes when known, verification/install
+stage, and an immutable explicit cancel action. Notification permission is not an admission
+gate; the open manager retains its own cancel control. No AIDL transaction, canonical JSON,
+v1 wire value, client copy, personal fact, or generated prose enters this path.
+
+**Why.** Application-scope acquisition ended when the process died, while a bound inference
+service could not safely become foreground on behalf of a background client. A dedicated
+owner-started component gives Android truthful long-running transfer ownership without
+letting Binder traffic cause a multi-gigabyte download. A single startup connectivity check
+was also insufficient: bounded range responses and transparent retries could otherwise
+cross onto a newly metered network.
+
+Direct foreground service ownership was chosen over a user-initiated data-transfer job for
+this coherent API-31-to-36 implementation. The latter is available only on newer platform
+versions, so adopting it now would require two lifecycle owners with different cancellation,
+status, and restart semantics. This decision can be revisited when the minimum supported
+platform permits one uniform owner; it does not weaken the current explicit-start rule.
+
+**Consequences.** Closing the manager screen does not cancel a running transfer, but
+process death never resumes one. Denied `POST_NOTIFICATIONS` does not block the service;
+Android's foreground-service surface and the manager are the remaining controls. Installed
+known-good artifacts are never removed before replacement verification and promotion.
+Delete, repair, reload, signed manifests, multi-role storage, benchmark work, real model
+transfer, and physical-device validation remain outside this change.
+
 ## 2026-08-23 — Only the owner manager may acquire a model
+
+**Superseded execution-owner detail.** The compile-time acquisition boundary below remains
+current. The application-scope job described here is replaced by the private foreground
+service decision above; acquisition no longer prepares the model after promotion.
 
 **Decision.** Separate acquisition from native-engine preparation at the type boundary.
 `LlmEngine.prepare()` and `generate()` use compatible installed artifacts only. Binder
@@ -26,13 +77,10 @@ acquisition completion. Cancellation propagates into ModelStore and preserves it
 partial bytes; the public state continues to report `modelDownloaded=false` until a complete
 verified artifact is installed.
 
-Owner acquisition and authorized prewarm capture a process-work epoch before registering.
-Critical memory trim advances that epoch before cancelling both directly registered jobs,
-so work requested before trim cannot register late and construct an engine or start a
-transfer afterward. The same epoch-aware job slot owns owner acquisition and prewarm; it
-rejects stale tickets under its coalescing lock before they can occupy the active slot or
-absorb valid post-trim work. The engine-existence guard applies only to coordinated unload,
-never to cancellation.
+Authorized installed-only prewarm captures a process-work epoch before registering.
+Critical memory trim advances that epoch before cancelling preparation, so work requested
+before trim cannot register late and construct an engine afterward. Foreground acquisition
+uses its own service-owned Job and synchronous cancellation registry.
 
 **Why.** A policy check around a download-capable `prepare()` did not make the boundary
 true: generation still called the same method and could start network work, while manager
@@ -40,10 +88,9 @@ acquisition and client preparation could overwrite each other's status. A compil
 split makes the security, latency, and ownership rule reviewable.
 
 **Consequences.** Existing proven/compatible installed fallback order and known-good files
-are preserved. The owner action remains process-owned but is not yet a foreground service
-or durable process-death transfer; networking policy, repair/delete UI, role-aware v2
-storage, and device acquisition tests remain later work. The v1 AIDL, JSON, and error-code
-values are unchanged.
+are preserved. Foreground ownership and one-run network policy are implemented by the newer
+decision above. Repair/delete UI, role-aware v2 storage, and device acquisition tests remain
+later work. The v1 AIDL, JSON, and error-code values are unchanged.
 
 ## 2026-08-23 — Bound v1 service work before native inference
 
