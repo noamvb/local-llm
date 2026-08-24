@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 internal enum class ModelRole(val displayName: String) {
+    ROUTER("Router"),
     WRITER("Writer"),
 }
 

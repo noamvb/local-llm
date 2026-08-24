@@ -11,10 +11,12 @@ import com.noamv.localllm.engine.LlmEngine
 import com.noamv.localllm.engine.ModelAcquisitionTransport
 import com.noamv.localllm.engine.ModelAcquirer
 import com.noamv.localllm.engine.ProcessWorkEpoch
+import com.noamv.localllm.engine.ModelResidencyCoordinator
 import com.noamv.localllm.engine.shouldPrewarmOnBind
 import com.noamv.localllm.history.AssistantDatabase
 import com.noamv.localllm.history.AssistantHistoryRepository
 import com.noamv.localllm.model.ModelStore
+import com.noamv.localllm.orchestrator.AssistantOrchestratorV2
 import com.noamv.localllm.privacy.AssistantAccessPolicy
 import com.noamv.localllm.transfer.ForegroundTransferCancellationRegistry
 import com.noamv.localllm.transfer.ModelRole
@@ -87,6 +89,27 @@ class LocalLlmApplication : Application() {
 
     val accessPolicy: AssistantAccessPolicy by lazy {
         AssistantAccessPolicy(this)
+    }
+
+    internal val residencyCoordinator: ModelResidencyCoordinator by lazy {
+        ModelResidencyCoordinator(this)
+    }
+
+    internal val assistantOrchestrator: AssistantOrchestratorV2 by lazy {
+        AssistantOrchestratorV2(
+            engine = engine,
+            historyRepository = historyRepository,
+            accessPolicy = accessPolicy,
+            residencyCoordinator = residencyCoordinator,
+            factProviderQuery = { _, _ ->
+                com.noamv.localllm.contract.v2.ProviderFactsResult(
+                    sourceApp = com.noamv.localllm.contract.v2.AppSource.CANNSHEET,
+                    revision = "v2",
+                    asOfTime = System.currentTimeMillis(),
+                    timezone = "UTC",
+                )
+            },
+        )
     }
 
     private val engineDelegate = lazy { LiteRtEngine(this, modelStore) }

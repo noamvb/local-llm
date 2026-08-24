@@ -46,15 +46,20 @@ internal class CallerAuthorizer(context: Context) {
         .toSet()
 
     fun enforceAuthorized(uid: Int) {
+        enforceAuthorizedCaller(uid)
+    }
+
+    fun enforceAuthorizedCaller(uid: Int): String {
         val packages = packageManager.getPackagesForUid(uid).orEmpty().distinct()
         val identities = packages.mapNotNull { packageName ->
             packageManager.signingIdentityOrNull(packageName)
         }
-        if (packages.size != identities.size ||
+        if (packages.size != 1 || identities.size != 1 ||
             !CallerAuthorizationPolicy.isAuthorized(identities, approvedCallers)
         ) {
             throw SecurityException("UID $uid is not an approved LocalLLM client")
         }
+        return packages.single()
     }
 }
 
