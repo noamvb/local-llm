@@ -1,0 +1,259 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 1,
+    "identityHash": "5660fccfc3fd7d5f4b6580795250cb6f",
+    "entities": [
+      {
+        "tableName": "conversation_threads",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`threadId` TEXT NOT NULL, `initiatingClient` TEXT NOT NULL, `title` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `turnCount` INTEGER NOT NULL, `isAutomaticFeed` INTEGER NOT NULL, PRIMARY KEY(`threadId`))",
+        "fields": [
+          {
+            "fieldPath": "threadId",
+            "columnName": "threadId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "initiatingClient",
+            "columnName": "initiatingClient",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "title",
+            "columnName": "title",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "turnCount",
+            "columnName": "turnCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isAutomaticFeed",
+            "columnName": "isAutomaticFeed",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "threadId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_conversation_threads_initiatingClient",
+            "unique": false,
+            "columnNames": [
+              "initiatingClient"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_conversation_threads_initiatingClient` ON `${TABLE_NAME}` (`initiatingClient`)"
+          },
+          {
+            "name": "index_conversation_threads_updatedAt",
+            "unique": false,
+            "columnNames": [
+              "updatedAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_conversation_threads_updatedAt` ON `${TABLE_NAME}` (`updatedAt`)"
+          },
+          {
+            "name": "index_conversation_threads_isAutomaticFeed",
+            "unique": false,
+            "columnNames": [
+              "isAutomaticFeed"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_conversation_threads_isAutomaticFeed` ON `${TABLE_NAME}` (`isAutomaticFeed`)"
+          }
+        ]
+      },
+      {
+        "tableName": "assistant_turns",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`historyId` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `threadId` TEXT NOT NULL, `turnId` TEXT NOT NULL, `initiatingClient` TEXT NOT NULL, `timestamp` INTEGER NOT NULL, `question` TEXT NOT NULL, `terminalStatus` TEXT NOT NULL, `resultText` TEXT NOT NULL, `citationsJson` TEXT NOT NULL, `citedFactsJson` TEXT NOT NULL, `sourcesJson` TEXT NOT NULL, `period` TEXT, `asOfTime` INTEGER NOT NULL, `modelVersion` TEXT, `grammarVersion` INTEGER NOT NULL, `validationIssuesJson` TEXT NOT NULL, `isAutomaticFeed` INTEGER NOT NULL, FOREIGN KEY(`threadId`) REFERENCES `conversation_threads`(`threadId`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "historyId",
+            "columnName": "historyId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "threadId",
+            "columnName": "threadId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "turnId",
+            "columnName": "turnId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "initiatingClient",
+            "columnName": "initiatingClient",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "timestamp",
+            "columnName": "timestamp",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "question",
+            "columnName": "question",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "terminalStatus",
+            "columnName": "terminalStatus",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "resultText",
+            "columnName": "resultText",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "citationsJson",
+            "columnName": "citationsJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "citedFactsJson",
+            "columnName": "citedFactsJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourcesJson",
+            "columnName": "sourcesJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "period",
+            "columnName": "period",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "asOfTime",
+            "columnName": "asOfTime",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "modelVersion",
+            "columnName": "modelVersion",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "grammarVersion",
+            "columnName": "grammarVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "validationIssuesJson",
+            "columnName": "validationIssuesJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isAutomaticFeed",
+            "columnName": "isAutomaticFeed",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "historyId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_assistant_turns_threadId",
+            "unique": false,
+            "columnNames": [
+              "threadId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_assistant_turns_threadId` ON `${TABLE_NAME}` (`threadId`)"
+          },
+          {
+            "name": "index_assistant_turns_turnId",
+            "unique": true,
+            "columnNames": [
+              "turnId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_assistant_turns_turnId` ON `${TABLE_NAME}` (`turnId`)"
+          },
+          {
+            "name": "index_assistant_turns_timestamp",
+            "unique": false,
+            "columnNames": [
+              "timestamp"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_assistant_turns_timestamp` ON `${TABLE_NAME}` (`timestamp`)"
+          },
+          {
+            "name": "index_assistant_turns_isAutomaticFeed",
+            "unique": false,
+            "columnNames": [
+              "isAutomaticFeed"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_assistant_turns_isAutomaticFeed` ON `${TABLE_NAME}` (`isAutomaticFeed`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "conversation_threads",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "threadId"
+            ],
+            "referencedColumns": [
+              "threadId"
+            ]
+          }
+        ]
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '5660fccfc3fd7d5f4b6580795250cb6f')"
+    ]
+  }
+}

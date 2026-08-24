@@ -38,6 +38,11 @@ import kotlinx.coroutines.launch
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
 
+import com.noamv.localllm.history.AssistantHistoryRepository
+import com.noamv.localllm.privacy.AssistantAccessPolicy
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.stateIn
+
 internal class ManagerViewModel(
     private val engine: LlmEngine,
     private val build: ModelBuild,
@@ -46,10 +51,52 @@ internal class ManagerViewModel(
     private val cancelOwnerTransfer: () -> Boolean,
     private val prepareInstalledModel: () -> Unit,
     private val scheduler: InferenceScheduler,
+    private val historyRepository: AssistantHistoryRepository? = null,
+    private val accessPolicy: AssistantAccessPolicy? = null,
 ) : ViewModel() {
 
     val status: StateFlow<EngineStatus> = engine.status
     val timings: StateFlow<EngineTimings> = engine.timings
+
+    val masterAssistantEnabled: StateFlow<Boolean> =
+        accessPolicy?.masterEnabled?.stateIn(
+            viewModelScope,
+            SharingStarted.Eagerly,
+            AssistantAccessPolicy.DEFAULT_MASTER_ENABLED,
+        ) ?: MutableStateFlow(true)
+
+    val cannsheetAccessEnabled: StateFlow<Boolean> =
+        accessPolicy?.cannsheetEnabled?.stateIn(
+            viewModelScope,
+            SharingStarted.Eagerly,
+            AssistantAccessPolicy.DEFAULT_CANNSHEET_ENABLED,
+        ) ?: MutableStateFlow(true)
+
+    val poopScheduleAccessEnabled: StateFlow<Boolean> =
+        accessPolicy?.poopScheduleEnabled?.stateIn(
+            viewModelScope,
+            SharingStarted.Eagerly,
+            AssistantAccessPolicy.DEFAULT_POOP_SCHEDULE_ENABLED,
+        ) ?: MutableStateFlow(true)
+
+    fun setMasterAssistantEnabled(enabled: Boolean) {
+        viewModelScope.launch { accessPolicy?.setMasterEnabled(enabled) }
+    }
+
+    fun setCannsheetAccessEnabled(enabled: Boolean) {
+        viewModelScope.launch { accessPolicy?.setCannsheetEnabled(enabled) }
+    }
+
+    fun setPoopScheduleAccessEnabled(enabled: Boolean) {
+        viewModelScope.launch { accessPolicy?.setPoopScheduleEnabled(enabled) }
+    }
+
+    fun clearAllHistory(onComplete: (() -> Unit)? = null) {
+        viewModelScope.launch {
+            historyRepository?.clearAllHistory()
+            onComplete?.invoke()
+        }
+    }
 
     private val _selfTest = MutableStateFlow<String?>(null)
     val selfTest: StateFlow<String?> = _selfTest.asStateFlow()
@@ -200,6 +247,8 @@ internal class ManagerViewModel(
                     cancelOwnerTransfer = { ModelTransferService.cancel(app) },
                     prepareInstalledModel = app::prepareInstalledModel,
                     scheduler = app.inferenceScheduler,
+                    historyRepository = app.historyRepository,
+                    accessPolicy = app.accessPolicy,
                 )
             }
         }
