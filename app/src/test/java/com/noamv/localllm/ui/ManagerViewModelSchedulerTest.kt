@@ -10,6 +10,11 @@ import com.noamv.localllm.engine.InferenceSchedulerSnapshot
 import com.noamv.localllm.engine.LlmEngine
 import com.noamv.localllm.engine.ModelNotInstalledException
 import com.noamv.localllm.model.ModelCatalog
+import com.noamv.localllm.service.ModelTransferLaunchResult
+import com.noamv.localllm.transfer.ModelRole
+import com.noamv.localllm.transfer.ModelTransferDescriptor
+import com.noamv.localllm.transfer.ModelTransferStatus
+import com.noamv.localllm.transfer.TransferNetworkPolicy
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -117,7 +122,10 @@ class ManagerViewModelSchedulerTest {
             val viewModel = viewModel(
                 engine = FakeEngine { flow { throw ModelNotInstalledException(ModelCatalog.E2B_GPU) } },
                 scheduler = scheduler,
-                startOwnerAcquisition = { ownerAcquisitions.incrementAndGet() },
+                startOwnerTransfer = {
+                    ownerAcquisitions.incrementAndGet()
+                    ModelTransferLaunchResult.STARTED
+                },
             )
 
             viewModel.runSelfTest()
@@ -125,6 +133,73 @@ class ManagerViewModelSchedulerTest {
 
             assertTrue(viewModel.selfTest.value.orEmpty().contains("not installed"))
             assertEquals(0, ownerAcquisitions.get())
+        }
+    }
+
+    @Test
+    fun `manager routes default and confirmed metered actions without persistence`() = runTest {
+        withMainDispatcher {
+            val policies = mutableListOf<TransferNetworkPolicy>()
+            val viewModel = viewModel(
+                engine = FakeEngine { flowOf("unused") },
+                scheduler = InferenceScheduler(this),
+                startOwnerTransfer = { policy ->
+                    policies += policy
+                    ModelTransferLaunchResult.STARTED
+                },
+            )
+
+            viewModel.prepare()
+            viewModel.prepareOnMeteredNetworkOnce()
+            viewModel.prepare()
+
+            assertEquals(
+                listOf(
+                    TransferNetworkPolicy.UNMETERED_WIFI,
+                    TransferNetworkPolicy.ALLOW_METERED_ONCE,
+                    TransferNetworkPolicy.UNMETERED_WIFI,
+                ),
+                policies,
+            )
+        }
+    }
+
+    @Test
+    fun `installed-only load cannot route into foreground acquisition`() = runTest {
+        withMainDispatcher {
+            val acquisitions = AtomicInteger()
+            val loads = AtomicInteger()
+            val viewModel = viewModel(
+                engine = FakeEngine { flowOf("unused") },
+                scheduler = InferenceScheduler(this),
+                startOwnerTransfer = {
+                    acquisitions.incrementAndGet()
+                    ModelTransferLaunchResult.STARTED
+                },
+                prepareInstalledModel = { loads.incrementAndGet() },
+            )
+
+            viewModel.loadInstalledModel()
+
+            assertEquals(1, loads.get())
+            assertEquals(0, acquisitions.get())
+        }
+    }
+
+    @Test
+    fun `foreground start denial is surfaced to owner`() = runTest {
+        withMainDispatcher {
+            val viewModel = viewModel(
+                engine = FakeEngine { flowOf("unused") },
+                scheduler = InferenceScheduler(this),
+                startOwnerTransfer = {
+                    ModelTransferLaunchResult.FOREGROUND_START_NOT_ALLOWED
+                },
+            )
+
+            viewModel.prepare()
+
+            assertTrue(viewModel.transferCommandMessage.value.orEmpty().contains("Android"))
         }
     }
 
@@ -142,11 +217,26 @@ class ManagerViewModelSchedulerTest {
     private fun viewModel(
         engine: LlmEngine,
         scheduler: InferenceScheduler,
-        startOwnerAcquisition: () -> Unit = {},
+        startOwnerTransfer: (TransferNetworkPolicy) -> ModelTransferLaunchResult = {
+            ModelTransferLaunchResult.STARTED
+        },
+        prepareInstalledModel: () -> Unit = {},
     ) = ManagerViewModel(
         engine = engine,
         build = ModelCatalog.E2B_GPU,
-        startOwnerAcquisition = startOwnerAcquisition,
+        transferStatus = MutableStateFlow(
+            ModelTransferStatus(
+                descriptor = ModelTransferDescriptor(
+                    role = ModelRole.WRITER,
+                    modelId = ModelCatalog.E2B_GPU.id,
+                    modelName = ModelCatalog.E2B_GPU.displayName,
+                    expectedBytes = ModelCatalog.E2B_GPU.sizeBytes,
+                ),
+            ),
+        ),
+        startOwnerTransfer = startOwnerTransfer,
+        cancelOwnerTransfer = { true },
+        prepareInstalledModel = prepareInstalledModel,
         scheduler = scheduler,
     )
 

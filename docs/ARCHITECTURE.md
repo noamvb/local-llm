@@ -14,7 +14,7 @@ as implemented until their feature and release gates complete.
 │   .summarize()         │        │ LocalLlmApplication                │
 │        ↓               │ bind   │   holds LlmEngine for process life │
 │ FactMapper (pure)      │───────▶│ LiteRtEngine → LiteRT-LM 0.16.1    │
-│ LocalLlmClient         │◀───────│ ModelStore ← owner manager action  │
+│ LocalLlmClient         │◀───────│ ModelStore ← private transfer FGS  │
 │ Insight card (Compose) │ tokens │   (download + SHA-256, ~2 GB)      │
 └────────────────────────┘        └────────────────────────────────────┘
         Cannsheet Mobile ─── same client tree, same service
@@ -103,11 +103,9 @@ contiguous allocation. Two decisions follow:
   admission or removes the admitted entry; terminal scheduler state releases that record
   and its death recipient exactly once.
 - `onTrimMemory(TRIM_MEMORY_RUNNING_CRITICAL)` first invalidates the process-work epoch,
-  then cancels process-owned acquisition and directly registered prewarm work while
-  preserving any resumable partial download. A request captured before trim cannot
-  register late and construct the engine afterward: the shared epoch-aware job slot rejects
-  stale tickets under its coalescing lock, before they can absorb valid post-trim work. Only
-  the coordinated unload is
+  then reaches and cancels the foreground service's registered transfer Job, preserving
+  resumable partial bytes, and finally cancels installed-only prewarm. A pre-trim
+  preparation ticket cannot construct the engine afterward; coordinated unload remains
   conditional on an engine already existing. Paying a reload is better than having the
   process killed mid-generation.
 
@@ -118,10 +116,18 @@ so none can reach `ModelStore.ensureAvailable()`. Missing artifacts fail immedia
 frozen v1 `MODEL_NOT_READY`, without entering the transfer mutex or waiting behind an
 owner download.
 
-Only the manager's existing owner action holds the acquisition interface. One
-application-owned job coalesces repeated taps, downloads at most the preferred artifact
-when no compatible artifact exists, then calls installed-only preparation. Acquisition
-does not iterate the backend fallback list.
+Only the manager's explicit action can start the private foreground transfer service. The
+service owns the actual acquisition Job, coalesces repeated starts without widening their
+network policy, and downloads at most the preferred artifact when no compatible artifact
+exists. It stops after verified atomic promotion; installed-only loading remains a separate
+action and acquisition does not iterate the backend fallback list.
+
+Every service instance draws session IDs from one process-wide monotonic source. A started
+transfer retains its session, foreground notification, and status collector after ordinary
+owner, policy, or trim cancellation until ModelStore releases file ownership and publishes
+an exact terminal storage snapshot. Cancellation and verified promotion share a commit
+arbiter: cancellation that claims first prevents promotion; promotion that claims first
+finishes as committed or failed and cannot be relabelled cancelled.
 
 The ID of the last build that initialized successfully is persisted in private app
 preferences. On process recreation, a still-installed compatible proven fallback is tried
@@ -135,16 +141,21 @@ state from leaking between the two client apps. Its LiteRT configuration has a h
 service-owned output-token ceiling, followed by terminal word-count validation; prompt
 instructions are not treated as enforcement.
 
-## Why there is no foreground service
+## Why inference is not a foreground service
 
-Generation is **not** wrapped in a foreground service, and the app declares no
-`foregroundServiceType` at all. Promoting a bound service is denied whenever the calling
+Generation is **not** wrapped in a foreground service. Promoting the bound inference
+service is denied whenever the calling
 client is itself in the background, because the system evaluates the *binding client's*
 eligibility and then throws `ForegroundServiceStartNotAllowedException` into *this*
 process, where the client cannot catch it. The `BIND_AUTO_CREATE` binding already keeps
 this process alive for the duration of a request. A client that wants a stronger guarantee
 runs its own foreground service around the call, and that state propagates over the
-binding. See `docs/DECISIONS.md`.
+binding.
+
+Model transfer is different: it begins only from the owner's visible LocalLLM action, uses
+a separate non-exported `foregroundServiceType="dataSync"` service, and stops immediately
+after verified atomic promotion. It never hosts generation or model initialization. See
+`docs/DECISIONS.md`.
 
 ## Model selection
 
@@ -155,15 +166,33 @@ SHA-256 taken from the HuggingFace LFS metadata and verified after download.
 
 ## Model acquisition durability
 
-Acquisition is an explicit owner-started manager action. Its application-owned job survives
-screen recreation, coalesces repeated taps, and is independent of the native-engine
-lifecycle lock so a missing-model client request never waits behind a multi-gigabyte
-transfer. Critical memory trim invalidates tickets captured by owner acquisition and
-prewarm before cancelling both registered jobs, so scheduling delay cannot resurrect
-pre-trim work. Both paths use the same job-slot primitive, which rejects a stale ticket
-synchronously before it can occupy the slot or coalesce a current request. Durable
-process-death transfer and a foreground-service handoff remain
-outside this Stage 1 boundary.
+Acquisition is an explicit owner-started manager action. The visible tap immediately starts
+a non-exported `dataSync` foreground service; its service scope owns the real acquisition
+Job, so closing or recreating the screen does not cancel it. Repeated starts share the
+active run and cannot turn a Wi-Fi-only run into a metered one. `START_NOT_STICKY`, null or
+retry intent rejection, and a five-hour app deadline ensure process death or Android 15's
+data-sync timeout never restarts hidden network work. The service stops after verified
+atomic promotion and does not keep the data-sync lifetime open for model initialization.
+On a platform `dataSync` timeout it first requests normal exact-settlement cancellation,
+then forces foreground/session cleanup after a fixed two-second grace if that same session
+is still active. The process-wide session ID and ModelStore mutex fence late callbacks and
+file work from a recreated service. Ordinary cancellation has no watchdog and waits for
+ModelStore's terminal snapshot.
+
+Default admission requires one exact active Android `Network` with `VALIDATED`, `INTERNET`,
+`NOT_METERED`, and Wi-Fi transport. The one-run override relaxes only the final two checks.
+OkHttp uses that network's socket factory and DNS with transparent retry disabled. The
+one-way lease revalidates each bounded 200/206 operation and atomically registers each
+created call under the same fence; invalidation synchronously cancels every call registered
+by the run. Default-network or capability loss therefore cannot create a later request or
+transparently migrate the active request. A retained complete partial takes a local-only
+verification/promotion path and does not acquire a network lease. Reconnection never
+resumes automatically; a later explicit owner action uses ModelStore's partial.
+
+Critical trim first invalidates the preparation epoch, then synchronously cancels the
+service-owned Job through a process registry, and finally cancels installed-only prewarm.
+This keeps transfer ownership out of application scope while preserving the existing
+preparation epoch fence.
 
 One coroutine-owned transfer coordinator serializes download, deletion, and pruning
 mutations. Cancelling a transfer immediately cancels its active OkHttp call, including a
@@ -182,13 +211,18 @@ strict forward progress, recover once from HTTP 416, and cap both response count
 bytes. Space checks charge only the bytes still missing plus fixed headroom. Network,
 HTTP/range, storage, incomplete body, checksum, and promotion failures remain separate
 typed causes for later service-level classification. Progress is coalesced to changed
-integer percentages while retaining monotonic initial and terminal states.
+integer percentages while retaining monotonic initial and terminal states. UI progress and
+retained-file length are distinct from cumulative transfer cost: every successfully read
+HTTP response-body byte is counted, even if a later size check rejects it, the partial is
+rolled back, or a server ignores `Range` and truncates before redownloading.
 
 A complete partial is SHA-256 verified before promotion. Promotion uses an atomic
 same-volume replacement, so the previous known-good target remains installed until its
 replacement is both complete and verified. Cancellation or out-of-memory during
 verification/promotion preserves the recoverable partial and never converts an
 `OutOfMemoryError` into an ordinary acquisition failure.
+The installed-target existence/length postcondition is inside the promotion commit fence,
+so a no-op or malformed promoter is a storage failure rather than a false completion.
 
 Public status has two explicit owners. Native runtime status is durable; active owner
 acquisition is a temporary overlay while the runtime is unloaded. A concurrent client

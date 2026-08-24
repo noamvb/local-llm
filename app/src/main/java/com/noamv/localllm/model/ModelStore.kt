@@ -29,8 +29,35 @@ import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import kotlin.coroutines.coroutineContext
 
-/** Progress during a download. [percent] is -1 while the total size is unknown. */
-data class DownloadProgress(val bytesRead: Long, val totalBytes: Long, val percent: Int)
+/**
+ * Progress during a download. [bytesRead] is monotonic for the frozen v1 percentage;
+ * [actualBytes] is the current resumable file length after a range reset.
+ */
+data class DownloadProgress(
+    val bytesRead: Long,
+    val totalBytes: Long,
+    val percent: Int,
+    val actualBytes: Long = bytesRead,
+    /** Bytes read from HTTP response bodies during this explicit operation. */
+    val transferredThisRunBytes: Long = 0L,
+)
+
+enum class ModelStoreTransferStage {
+    DOWNLOADING,
+    VERIFYING,
+    INSTALLING,
+}
+
+/** Exact artifact bytes observed after a transfer operation releases file ownership. */
+internal data class ModelTransferByteSnapshot(
+    val expectedBytes: Long,
+    val installedBytes: Long,
+    val partialBytes: Long,
+    val availableBytes: Long,
+    val transferredThisRunBytes: Long,
+    /** True only when this operation won cancellation arbitration and promoted. */
+    val promotionCommitted: Boolean,
+)
 
 sealed class ModelStoreException(message: String, cause: Throwable? = null) :
     IOException(message, cause)
@@ -163,6 +190,40 @@ class ModelStore internal constructor(
         }
     }
 
+    /** Safely retained bytes that a later explicit owner action can resume. */
+    fun partialBytes(build: ModelBuild): Long = partFor(build)
+        .takeIf { it.isFile }
+        ?.length()
+        ?.takeIf { it in 0L..build.sizeBytes }
+        ?: 0L
+
+    /** Reads installed/partial file truth without creating the model directory. */
+    internal fun transferByteSnapshot(
+        build: ModelBuild,
+        transferredThisRunBytes: Long = 0L,
+        promotionCommitted: Boolean = false,
+    ): ModelTransferByteSnapshot {
+        val targetBytes = File(root, build.fileName).takeIf { it.isFile }?.length() ?: 0L
+        val retainedPartial = File(root, "${build.fileName}.part")
+            .takeIf { it.isFile }
+            ?.length()
+            ?.takeIf { it in 0L..build.sizeBytes }
+            ?: 0L
+        val available = if (targetBytes == build.sizeBytes) {
+            build.sizeBytes
+        } else {
+            retainedPartial
+        }
+        return ModelTransferByteSnapshot(
+            expectedBytes = build.sizeBytes,
+            installedBytes = targetBytes,
+            partialBytes = retainedPartial,
+            availableBytes = available,
+            transferredThisRunBytes = transferredThisRunBytes.coerceAtLeast(0L),
+            promotionCommitted = promotionCommitted,
+        )
+    }
+
     /** Remaining model bytes plus the fixed safety headroom. */
     fun requiredFreeBytes(build: ModelBuild): Long =
         remainingDownloadBytes(build).saturatedPlus(STORAGE_HEADROOM_BYTES)
@@ -185,7 +246,25 @@ class ModelStore internal constructor(
     suspend fun ensureAvailable(
         build: ModelBuild,
         onProgress: (DownloadProgress) -> Unit = {},
+    ): File = ensureAvailableWithTransport(
+        build = build,
+        onProgress = onProgress,
+    )
+
+    internal suspend fun ensureAvailableWithTransport(
+        build: ModelBuild,
+        callFactory: Call.Factory = client,
+        validateNetwork: () -> Unit = {},
+        commitPromotion: ((() -> Unit) -> Boolean) = { promotion ->
+            promotion()
+            true
+        },
+        onStage: (ModelStoreTransferStage) -> Unit = {},
+        onProgress: (DownloadProgress) -> Unit = {},
+        onTerminalSnapshot: (ModelTransferByteSnapshot) -> Unit = {},
     ): File = coroutineScope {
+        val progressReporter = ProgressReporter(onProgress)
+        val promotionOutcome = PromotionOutcome()
         // A dedicated child owns the transfer. A delete request can cancel that child
         // without cancelling an unrelated parent scope, while caller cancellation still
         // propagates into it normally.
@@ -194,9 +273,29 @@ class ModelStore internal constructor(
                 val transfer = ActiveTransfer(build.fileName, currentCoroutineContext()[Job]!!)
                 registerActiveTransferUnlessDeleting(transfer)
                 try {
-                    ensureAvailableLocked(build, ProgressReporter(onProgress))
+                    ensureAvailableLocked(
+                        build = build,
+                        callFactory = callFactory,
+                        validateNetwork = validateNetwork,
+                        commitPromotion = commitPromotion,
+                        progress = progressReporter,
+                        onStage = onStage,
+                        promotionOutcome = promotionOutcome,
+                    )
                 } finally {
                     clearActiveTransfer(transfer)
+                    // Streams, rollback, verification deletion, and promotion have all
+                    // completed before this exact observation. Presentation must never
+                    // mask the authoritative transfer outcome.
+                    runCatching {
+                        onTerminalSnapshot(
+                            transferByteSnapshot(
+                                build,
+                                progressReporter.transferredThisRunBytes(),
+                                promotionOutcome.committed,
+                            ),
+                        )
+                    }
                 }
             }
         }.await()
@@ -245,7 +344,12 @@ class ModelStore internal constructor(
 
     private suspend fun ensureAvailableLocked(
         build: ModelBuild,
+        callFactory: Call.Factory,
+        validateNetwork: () -> Unit,
+        commitPromotion: ((() -> Unit) -> Boolean),
         progress: ProgressReporter,
+        onStage: (ModelStoreTransferStage) -> Unit,
+        promotionOutcome: PromotionOutcome,
     ): File {
         require(build.sizeBytes > 0) { "Model size must be positive." }
 
@@ -258,15 +362,28 @@ class ModelStore internal constructor(
         }
 
         if (part.isFile && part.length() == build.sizeBytes) {
-            return verifyAndPromote(build, part, target)
+            return verifyAndPromote(
+                build,
+                part,
+                target,
+                onStage,
+                commitPromotion,
+                promotionOutcome,
+            )
         }
 
         checkFreeSpace(build)
+        onStage(ModelStoreTransferStage.DOWNLOADING)
         progress.report(part.takeIf { it.isFile }?.length().orZero(), build.sizeBytes)
 
         var retriedAfterRangeFailure = false
         var responseCount = 0
         while (true) {
+            coroutineContext.ensureActive()
+            // The foreground owner revalidates here, then the lease-bound Call.Factory
+            // atomically fences call creation and registers the call for synchronous
+            // cancellation. The separate validation is an early, readable failure path.
+            validateNetwork()
             coroutineContext.ensureActive()
             responseCount++
             if (responseCount > MAX_DOWNLOAD_RESPONSES) {
@@ -278,7 +395,7 @@ class ModelStore internal constructor(
                 .apply { if (existing > 0) header("Range", "bytes=$existing-") }
                 .build()
 
-            val outcome = executeCancellableCall(build, client.newCall(request)) { response ->
+            val outcome = executeCancellableCall(build, callFactory.newCall(request)) { response ->
                 if (response.code == HTTP_RANGE_NOT_SATISFIABLE &&
                     existing > 0 &&
                     !retriedAfterRangeFailure
@@ -316,7 +433,14 @@ class ModelStore internal constructor(
         }
 
         progress.report(build.sizeBytes, build.sizeBytes)
-        return verifyAndPromote(build, part, target)
+        return verifyAndPromote(
+            build,
+            part,
+            target,
+            onStage,
+            commitPromotion,
+            promotionOutcome,
+        )
     }
 
     private suspend fun writeResponse(
@@ -348,6 +472,11 @@ class ModelStore internal constructor(
         var receivedThisResponse = 0L
         try {
             output.use { destination ->
+                if (!responsePlan.append && existing > 0L) {
+                    // append=false has now successfully truncated the stale partial.
+                    // Publish the reset before the first replacement byte is written.
+                    progress.report(0L, build.sizeBytes)
+                }
                 val source = try {
                     body.byteStream()
                 } catch (failure: IOException) {
@@ -360,6 +489,10 @@ class ModelStore internal constructor(
                             coroutineContext.ensureActive()
                             val read = readNetworkChunk(build, source, buffer)
                             if (read == -1) break
+                            // Count successful response-body reads independently of file
+                            // retention. A later size rejection, rollback, or reset does
+                            // not make already consumed network bytes disappear.
+                            progress.recordNetworkBytes(read.toLong())
 
                             val nextResponseBytes = receivedThisResponse + read
                             val nextTotalBytes = initialLength + nextResponseBytes
@@ -485,15 +618,38 @@ class ModelStore internal constructor(
         throw ModelDownloadHttpException(response.code, build)
     }
 
-    private suspend fun verifyAndPromote(build: ModelBuild, part: File, target: File): File {
+    private suspend fun verifyAndPromote(
+        build: ModelBuild,
+        part: File,
+        target: File,
+        onStage: (ModelStoreTransferStage) -> Unit,
+        commitPromotion: ((() -> Unit) -> Boolean),
+        promotionOutcome: PromotionOutcome,
+    ): File {
+        onStage(ModelStoreTransferStage.VERIFYING)
         val digest = fileHasher(part)
         if (!digest.equals(build.sha256, ignoreCase = true)) {
             deleteOrThrow(part, "Could not discard the model file that failed verification.")
             throw ModelChecksumException(build.sha256, digest, build)
         }
 
+        onStage(ModelStoreTransferStage.INSTALLING)
         try {
-            verifiedFilePromoter(part, target)
+            val committed = commitPromotion {
+                verifiedFilePromoter(part, target)
+                if (!target.isFile || target.length() != build.sizeBytes) {
+                    throw ModelPromotionException(
+                        build,
+                        IOException(
+                            "Atomic promotion completed without the pinned target file.",
+                        ),
+                    )
+                }
+            }
+            if (!committed) {
+                throw CancellationException("Model promotion lost cancellation arbitration.")
+            }
+            promotionOutcome.committed = true
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (outOfMemory: OutOfMemoryError) {
@@ -504,12 +660,6 @@ class ModelStore internal constructor(
             throw ModelPromotionException(build, failure)
         }
 
-        if (!target.isFile || target.length() != build.sizeBytes) {
-            throw ModelPromotionException(
-                build,
-                IOException("Atomic promotion completed without the pinned target file."),
-            )
-        }
         return target
     }
 
@@ -687,6 +837,17 @@ private class ProgressReporter(
 ) {
     private var lastBytes = -1L
     private var lastPercent = Int.MIN_VALUE
+    private var lastActualBytes = -1L
+    private var transferredThisRunBytes = 0L
+
+    fun transferredThisRunBytes(): Long = transferredThisRunBytes
+
+    /** Counts every successfully consumed HTTP response-body byte exactly once. */
+    fun recordNetworkBytes(bytes: Long) {
+        if (bytes > 0L) {
+            transferredThisRunBytes = transferredThisRunBytes.saturatedPlus(bytes)
+        }
+    }
 
     /**
      * Version-one clients consume integer percentages, so report only a changed percent.
@@ -694,14 +855,31 @@ private class ProgressReporter(
      * ignores Range must not make the public progress bar run backwards.
      */
     fun report(actualBytes: Long, totalBytes: Long) {
-        val monotonicBytes = maxOf(lastBytes.coerceAtLeast(0), actualBytes.coerceIn(0, totalBytes))
-        val next = progressFor(monotonicBytes, totalBytes)
-        if (lastBytes < 0 || next.percent != lastPercent || monotonicBytes == totalBytes) {
-            if (next.bytesRead != lastBytes || next.percent != lastPercent) callback(next)
+        val boundedActual = actualBytes.coerceIn(0, totalBytes)
+        val previousActual = lastActualBytes
+        val monotonicBytes = maxOf(lastBytes.coerceAtLeast(0), boundedActual)
+        val next = progressFor(monotonicBytes, totalBytes).copy(
+            actualBytes = boundedActual,
+            transferredThisRunBytes = transferredThisRunBytes,
+        )
+        val actualReset = previousActual >= 0L && next.actualBytes < previousActual
+        if (lastBytes < 0 || next.percent != lastPercent || actualReset || monotonicBytes == totalBytes) {
+            if (next.bytesRead != lastBytes ||
+                next.percent != lastPercent ||
+                actualReset
+            ) callback(next)
             lastBytes = next.bytesRead
             lastPercent = next.percent
         }
+        // File position is separate from network-byte accounting and must be updated on
+        // every report, including multiple writes within one integer percent.
+        lastActualBytes = boundedActual
     }
+}
+
+/** Per-operation truth passed into the exact terminal storage snapshot. */
+private class PromotionOutcome {
+    var committed: Boolean = false
 }
 
 private fun progressFor(bytesRead: Long, totalBytes: Long): DownloadProgress {

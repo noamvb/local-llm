@@ -5,6 +5,9 @@
     <!-- Downloading the model file. No other network use exists in this app. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Explicit owner-started model transfer only; inference remains a bound service. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <!-- Download and inference progress notifications. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
@@ -86,6 +89,16 @@
                 <action android:name="com.noamv.localllm.action.BIND_INFERENCE" />
             </intent-filter>
         </service>
+
+        <!--
+          Private, user-started model transfer owner. It is non-sticky, holds no Binder
+          API, and stops immediately after verified atomic promotion. Process death leaves
+          a resumable partial and never restarts network work by itself.
+        -->
+        <service
+            android:name=".service.ModelTransferService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
     </application>
 </manifest>

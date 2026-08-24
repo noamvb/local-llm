@@ -31,9 +31,25 @@ request is made; the model's only job is to turn those facts into sentences. See
 
 ## Model storage
 
-The owner downloads the model explicitly from the LocalLLM manager screen. Client status,
-prewarm, self-test, and generation paths use installed artifacts only and never initiate a
-network transfer; a client request made before installation receives `MODEL_NOT_READY`.
+The owner downloads the model explicitly from the LocalLLM manager screen. The visible tap
+starts a private `dataSync` foreground service, which owns the actual transfer even if the
+manager screen closes. Its default policy requires the same validated, internet-capable,
+unmetered Wi-Fi network for the entire transfer. A confirmation permits mobile or metered
+data for that transfer only; it is never saved as a global bypass. The approved Android
+`Network` is pinned into OkHttp; a lease-bound call factory atomically fences every HTTP
+call and synchronously cancels registered calls when eligibility is lost. A network change
+therefore stops the run while preserving resumable partial bytes. A retained complete
+partial can still be verified and atomically promoted without requiring a network.
+
+Client status, prewarm, self-test, and generation paths use installed artifacts only and
+never initiate or resume a network transfer; a client request made before installation
+receives `MODEL_NOT_READY`. The foreground service is non-sticky and stops after SHA-256
+verification and atomic installation, so process death cannot silently restart a download.
+Cancellation retains foreground/session ownership until ModelStore reports exact terminal
+disk state; Android's `dataSync` timeout additionally forces that exact service session to
+stop after a two-second app watchdog. A process-monotonic session ID fences any later disk
+settlement from a newly recreated service.
+Loading the installed model is a separate network-free manager/client action.
 The artifact comes from the public, ungated
 [litert-community](https://huggingface.co/litert-community) HuggingFace repositories and
 verified against a known SHA-256 before it is used. It is stored in internal app storage

@@ -23,6 +23,10 @@ import com.noamv.localllm.engine.LiteRtEngine
 import com.noamv.localllm.engine.LlmEngine
 import com.noamv.localllm.model.ModelBuild
 import com.noamv.localllm.model.ModelCatalog
+import com.noamv.localllm.service.ModelTransferLaunchResult
+import com.noamv.localllm.service.ModelTransferService
+import com.noamv.localllm.transfer.ModelTransferStatus
+import com.noamv.localllm.transfer.TransferNetworkPolicy
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
@@ -34,10 +38,13 @@ import kotlinx.coroutines.launch
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
 
-class ManagerViewModel(
+internal class ManagerViewModel(
     private val engine: LlmEngine,
     private val build: ModelBuild,
-    private val startOwnerAcquisition: () -> Unit,
+    val transferStatus: StateFlow<ModelTransferStatus>,
+    private val startOwnerTransfer: (TransferNetworkPolicy) -> ModelTransferLaunchResult,
+    private val cancelOwnerTransfer: () -> Boolean,
+    private val prepareInstalledModel: () -> Unit,
     private val scheduler: InferenceScheduler,
 ) : ViewModel() {
 
@@ -49,17 +56,36 @@ class ManagerViewModel(
     private val activeSelfTestId = AtomicReference<String?>(null)
     private var selfTestJob: Job? = null
 
+    private val _transferCommandMessage = MutableStateFlow<String?>(null)
+    val transferCommandMessage: StateFlow<String?> = _transferCommandMessage.asStateFlow()
+
     val modelName: String get() = build.displayName
     val modelSizeGb: Double get() = build.sizeGb
     val chipset: String? get() = LiteRtEngine.boardPlatform()
 
-    /**
-     * Starts the explicit owner download-and-load action on the application scope rather than
-     * [viewModelScope], so that closing this screen does not abandon a multi-gigabyte
-     * transfer. Progress and any failure arrive through [status], which the screen
-     * already renders.
-     */
-    fun prepare() = startOwnerAcquisition()
+    /** Starts the explicit foreground transfer; closing this screen does not cancel it. */
+    fun prepare() = startTransfer(TransferNetworkPolicy.UNMETERED_WIFI)
+
+    fun prepareOnMeteredNetworkOnce() =
+        startTransfer(TransferNetworkPolicy.ALLOW_METERED_ONCE)
+
+    fun cancelTransfer() {
+        if (!cancelOwnerTransfer()) {
+            _transferCommandMessage.value = "Could not deliver the cancel command."
+        }
+    }
+
+    fun loadInstalledModel() = prepareInstalledModel()
+
+    private fun startTransfer(policy: TransferNetworkPolicy) {
+        _transferCommandMessage.value = when (startOwnerTransfer(policy)) {
+            ModelTransferLaunchResult.STARTED -> null
+            ModelTransferLaunchResult.FOREGROUND_START_NOT_ALLOWED ->
+                "Android did not allow the foreground transfer to start. Keep LocalLLM open and try again."
+            ModelTransferLaunchResult.FAILED ->
+                "The foreground transfer could not be started."
+        }
+    }
 
     /**
      * Exercises the whole pipeline with fixed facts, so the owner can tell the model is
@@ -169,7 +195,10 @@ class ManagerViewModel(
                         board = LiteRtEngine.boardPlatform(),
                         npuDispatchAvailable = LiteRtEngine.hasNpuDispatchLibraries(app),
                     ),
-                    startOwnerAcquisition = { app.acquireAndPrepareModel() },
+                    transferStatus = app.modelTransferStatus,
+                    startOwnerTransfer = { policy -> ModelTransferService.start(app, policy) },
+                    cancelOwnerTransfer = { ModelTransferService.cancel(app) },
+                    prepareInstalledModel = app::prepareInstalledModel,
                     scheduler = app.inferenceScheduler,
                 )
             }

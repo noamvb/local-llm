@@ -13,7 +13,12 @@ import com.noamv.localllm.model.ModelDownloadTooLargeException
 import com.noamv.localllm.model.ModelNetworkException
 import com.noamv.localllm.model.ModelPromotionException
 import com.noamv.localllm.model.ModelStore
+import com.noamv.localllm.model.ModelStoreTransferStage
 import com.noamv.localllm.model.ModelStorageException
+import com.noamv.localllm.model.ModelTransferByteSnapshot
+import com.noamv.localllm.transfer.PromotionCommitArbiter
+import com.noamv.localllm.transfer.PromotionCommitState
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitCancellation
@@ -41,6 +46,8 @@ import java.io.File
 import java.io.IOException
 import java.io.InputStream
 import java.security.MessageDigest
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.locks.LockSupport
 
@@ -87,6 +94,7 @@ class ModelStoreTest {
     fun `a complete partial verifies and promotes without a network request`() = runTest {
         partFile.writeBytes(payload)
         val calls = AtomicInteger()
+        val validations = AtomicInteger()
         val store = ModelStore(
             temporaryFolder.root,
             scriptedClient { request, _ ->
@@ -95,9 +103,13 @@ class ModelStoreTest {
             },
         )
 
-        val file = store.ensureAvailable(build)
+        val file = store.ensureAvailableWithTransport(
+            build = build,
+            validateNetwork = { validations.incrementAndGet() },
+        )
 
         assertEquals(0, calls.get())
+        assertEquals(0, validations.get())
         assertTrue(store.isInstalled(build))
         assertEquals(payload.toList(), file.readBytes().toList())
         assertFalse(partFile.exists())
@@ -161,6 +173,91 @@ class ModelStoreTest {
     }
 
     @Test
+    fun `network lease is revalidated before every bounded response`() = runTest {
+        val chunkBytes = 16 * 1024
+        val validations = AtomicInteger()
+        val requests = mutableListOf<Request>()
+        val store = ModelStore(
+            temporaryFolder.root,
+            scriptedClient(requests) { request, _ ->
+                val start = request.header("Range")
+                    ?.removePrefix("bytes=")
+                    ?.removeSuffix("-")
+                    ?.toInt()
+                    ?: 0
+                val endExclusive = minOf(start + chunkBytes, payload.size)
+                response(
+                    request = request,
+                    code = 206,
+                    body = payload.copyOfRange(start, endExclusive),
+                    contentRange = "bytes $start-${endExclusive - 1}/${payload.size}",
+                )
+            },
+        )
+
+        store.ensureAvailableWithTransport(
+            build = build,
+            validateNetwork = { validations.incrementAndGet() },
+        )
+
+        assertEquals(4, requests.size)
+        assertEquals(requests.size, validations.get())
+    }
+
+    @Test
+    fun `closed network lease prevents creation of the next chunk request`() = runTest {
+        val chunkBytes = 16 * 1024
+        val validations = AtomicInteger()
+        val requests = mutableListOf<Request>()
+        val store = ModelStore(
+            temporaryFolder.root,
+            scriptedClient(requests) { request, _ ->
+                response(
+                    request = request,
+                    code = 206,
+                    body = payload.copyOfRange(0, chunkBytes),
+                    contentRange = "bytes 0-${chunkBytes - 1}/${payload.size}",
+                )
+            },
+        )
+
+        val failure = runCatching {
+            store.ensureAvailableWithTransport(
+                build = build,
+                validateNetwork = {
+                    if (validations.incrementAndGet() > 1) {
+                        throw IOException("lease closed")
+                    }
+                },
+            )
+        }.exceptionOrNull()
+
+        assertTrue(failure is IOException)
+        assertEquals(2, validations.get())
+        assertEquals(1, requests.size)
+        assertEquals(chunkBytes.toLong(), partFile.length())
+    }
+
+    @Test
+    fun `transfer stages expose verification and atomic installation`() = runTest {
+        val stages = mutableListOf<ModelStoreTransferStage>()
+        val store = ModelStore(temporaryFolder.root, clientServing(payload))
+
+        store.ensureAvailableWithTransport(build = build, onStage = stages::add)
+
+        assertEquals(
+            listOf(
+                ModelStoreTransferStage.DOWNLOADING,
+                ModelStoreTransferStage.VERIFYING,
+                ModelStoreTransferStage.INSTALLING,
+            ),
+            stages,
+        )
+        assertTrue(store.isInstalled(build))
+        assertFalse(partFile.exists())
+    }
+
+    @Test
     fun `partial response loops stop at the bounded response limit`() = runTest {
         val manyChunks = ByteArray(600) { (it % 251).toByte() }
         val manyChunkBuild = buildFor(manyChunks, "many-chunks")
@@ -196,15 +293,62 @@ class ModelStoreTest {
         val prefixBytes = 12 * 1024
         partFile.writeBytes(payload.copyOf(prefixBytes))
         val requests = mutableListOf<Request>()
+        val progress = mutableListOf<DownloadProgress>()
         val store = ModelStore(
             temporaryFolder.root,
             scriptedClient(requests) { request, _ -> response(request, 200, payload) },
         )
 
-        val file = store.ensureAvailable(build)
+        val file = store.ensureAvailable(build, progress::add)
 
         assertEquals("bytes=$prefixBytes-", requests.single().header("Range"))
         assertEquals(payload.toList(), file.readBytes().toList())
+        assertTrue(progress.any { it.actualBytes == 0L })
+        assertEquals(payload.size.toLong(), progress.last().transferredThisRunBytes)
+    }
+
+    @Test
+    fun `terminal snapshot captures same-percent bytes written before cancellation`() = runTest {
+        val largePayload = ByteArray(1024 * 1024) { (it % 251).toByte() }
+        val largeBuild = buildFor(largePayload, "same-percent-cancel")
+        val secondReadBlocked = CompletableDeferred<Unit>()
+        val releaseRead = CompletableDeferred<Unit>()
+        val terminal = CompletableDeferred<ModelTransferByteSnapshot>()
+        val progress = mutableListOf<DownloadProgress>()
+        val store = ModelStore(
+            temporaryFolder.root,
+            scriptedClient { request, _ ->
+                responseFromStream(
+                    request = request,
+                    stream = FirstChunkThenAwaitStream(
+                        body = largePayload,
+                        chunkBytes = 4 * 1024,
+                        secondReadBlocked = secondReadBlocked,
+                        releaseRead = releaseRead,
+                    ),
+                    declaredLength = largePayload.size.toLong(),
+                )
+            },
+        )
+
+        val transfer = launch {
+            store.ensureAvailableWithTransport(
+                build = largeBuild,
+                onProgress = progress::add,
+                onTerminalSnapshot = terminal::complete,
+            )
+        }
+        secondReadBlocked.await()
+        assertEquals(0L, progress.last().actualBytes)
+        transfer.cancel()
+        releaseRead.complete(Unit)
+        transfer.join()
+        val snapshot = terminal.await()
+
+        assertTrue(transfer.isCancelled)
+        assertEquals((4 * 1024).toLong(), snapshot.partialBytes)
+        assertEquals((4 * 1024).toLong(), snapshot.availableBytes)
+        assertEquals((4 * 1024).toLong(), snapshot.transferredThisRunBytes)
     }
 
     @Test
@@ -391,6 +535,30 @@ class ModelStoreTest {
             assertTrue("a server reset must not move progress backwards", after.bytesRead >= before.bytesRead)
             assertTrue(after.percent >= before.percent)
         }
+        assertTrue(progress.any { it.actualBytes == 0L && it.bytesRead == prefixBytes.toLong() })
+        assertEquals(payload.size.toLong(), progress.last().transferredThisRunBytes)
+    }
+
+    @Test
+    fun `many writes within one percent count network bytes exactly once`() = runTest {
+        val largePayload = ByteArray(1024 * 1024) { (it % 251).toByte() }
+        val largeBuild = buildFor(largePayload, "subpercent-accounting")
+        val progress = mutableListOf<DownloadProgress>()
+        val store = ModelStore(
+            temporaryFolder.root,
+            scriptedClient { request, _ ->
+                responseFromStream(
+                    request = request,
+                    stream = FixedChunkStream(largePayload, 4 * 1024),
+                    declaredLength = largePayload.size.toLong(),
+                )
+            },
+        )
+
+        store.ensureAvailable(largeBuild, progress::add)
+
+        assertEquals(largePayload.size.toLong(), progress.last().transferredThisRunBytes)
+        assertTrue(progress.size <= 101)
     }
 
     @Test
@@ -407,7 +575,13 @@ class ModelStoreTest {
 
         assertEquals(DownloadProgress(0, largePayload.size.toLong(), 0), progress.first())
         assertEquals(
-            DownloadProgress(largePayload.size.toLong(), largePayload.size.toLong(), 100),
+            DownloadProgress(
+                bytesRead = largePayload.size.toLong(),
+                totalBytes = largePayload.size.toLong(),
+                percent = 100,
+                actualBytes = largePayload.size.toLong(),
+                transferredThisRunBytes = largePayload.size.toLong(),
+            ),
             progress.last(),
         )
         assertTrue("integer percent coalescing should cap events", progress.size <= 101)
@@ -660,6 +834,7 @@ class ModelStoreTest {
 
     @Test
     fun `an unknown-length oversized body is capped and rolled back`() = runTest {
+        var terminal: ModelTransferByteSnapshot? = null
         val store = ModelStore(
             temporaryFolder.root,
             scriptedClient { request, _ ->
@@ -672,23 +847,45 @@ class ModelStoreTest {
             },
         )
 
-        val failure = runCatching { store.ensureAvailable(build) }.exceptionOrNull()
+        val failure = runCatching {
+            store.ensureAvailableWithTransport(
+                build = build,
+                onTerminalSnapshot = { terminal = it },
+            )
+        }.exceptionOrNull()
 
         assertTrue(failure is ModelDownloadTooLargeException)
         assertTrue(partFile.exists())
         assertEquals(0, partFile.length())
         assertFalse(store.isInstalled(build))
+        assertEquals(0L, terminal?.availableBytes)
+        assertEquals(build.sizeBytes, terminal?.expectedBytes)
+        assertEquals(
+            (payload.size + 1).toLong(),
+            terminal?.transferredThisRunBytes,
+        )
+        assertFalse(terminal?.promotionCommitted == true)
     }
 
     @Test
     fun `a download whose bytes do not match the digest is discarded`() = runTest {
+        var terminal: ModelTransferByteSnapshot? = null
         val store = ModelStore(temporaryFolder.root, clientServing(ByteArray(payload.size) { 7 }))
 
-        val failure = runCatching { store.ensureAvailable(build) }.exceptionOrNull()
+        val failure = runCatching {
+            store.ensureAvailableWithTransport(
+                build = build,
+                onTerminalSnapshot = { terminal = it },
+            )
+        }.exceptionOrNull()
 
         assertTrue("verification failure should surface", failure != null)
         assertFalse(store.isInstalled(build))
         assertFalse("a file that failed verification must not be left to resume", partFile.exists())
+        assertEquals(0L, terminal?.partialBytes)
+        assertEquals(0L, terminal?.availableBytes)
+        assertEquals(payload.size.toLong(), terminal?.transferredThisRunBytes)
+        assertFalse(terminal?.promotionCommitted == true)
     }
 
     @Test
@@ -739,13 +936,115 @@ class ModelStoreTest {
         val previousTarget = byteArrayOf(1, 1, 2, 3, 5, 8)
         val target = File(temporaryFolder.root, build.fileName).apply { writeBytes(previousTarget) }
         val store = ModelStore(temporaryFolder.root, clientServing(payload))
+        var terminal: ModelTransferByteSnapshot? = null
 
-        val installed = store.ensureAvailable(build)
+        val installed = store.ensureAvailableWithTransport(
+            build = build,
+            onTerminalSnapshot = { terminal = it },
+        )
 
         assertEquals(target.absolutePath, installed.absolutePath)
         assertEquals(payload.toList(), target.readBytes().toList())
         assertFalse(partFile.exists())
         assertTrue(store.isInstalled(build))
+        assertEquals(build.sizeBytes, terminal?.installedBytes)
+        assertEquals(0L, terminal?.partialBytes)
+        assertEquals(build.sizeBytes, terminal?.availableBytes)
+        assertTrue(terminal?.promotionCommitted == true)
+    }
+
+    @Test
+    fun `cancellation claim before promotion preserves the verified partial`() = runTest {
+        partFile.writeBytes(payload)
+        val arbiter = PromotionCommitArbiter()
+        var promoterCalled = false
+        var terminal: ModelTransferByteSnapshot? = null
+        val store = ModelStore(
+            root = temporaryFolder.root,
+            client = OkHttpClient(),
+            freeBytesProvider = { Long.MAX_VALUE },
+            verifiedFilePromoter = { _, _ -> promoterCalled = true },
+        )
+        assertTrue(arbiter.cancel())
+
+        val failure = runCatching {
+            store.ensureAvailableWithTransport(
+                build = build,
+                commitPromotion = arbiter::commit,
+                onTerminalSnapshot = { terminal = it },
+            )
+        }.exceptionOrNull()
+
+        assertTrue(failure is CancellationException)
+        assertFalse(promoterCalled)
+        assertEquals(PromotionCommitState.CANCELLED, arbiter.state())
+        assertEquals(payload.toList(), partFile.readBytes().toList())
+        assertFalse(store.isInstalled(build))
+        assertFalse(terminal?.promotionCommitted == true)
+    }
+
+    @Test
+    fun `promotion claim wins a concurrent cancel and installs exactly once`() = runBlocking {
+        partFile.writeBytes(payload)
+        val promotionEntered = CountDownLatch(1)
+        val releasePromotion = CountDownLatch(1)
+        val arbiter = PromotionCommitArbiter()
+        var terminal: ModelTransferByteSnapshot? = null
+        val store = ModelStore(
+            root = temporaryFolder.root,
+            client = OkHttpClient(),
+            freeBytesProvider = { Long.MAX_VALUE },
+            verifiedFilePromoter = { source, target ->
+                promotionEntered.countDown()
+                check(releasePromotion.await(5, TimeUnit.SECONDS))
+                check(source.renameTo(target))
+            },
+        )
+
+        val transfer = launch(Dispatchers.Default) {
+            store.ensureAvailableWithTransport(
+                build = build,
+                commitPromotion = arbiter::commit,
+                onTerminalSnapshot = { terminal = it },
+            )
+        }
+        assertTrue(promotionEntered.await(5, TimeUnit.SECONDS))
+        assertFalse(arbiter.cancel())
+        releasePromotion.countDown()
+        transfer.join()
+
+        assertFalse(transfer.isCancelled)
+        assertEquals(PromotionCommitState.COMMITTED, arbiter.state())
+        assertTrue(store.isInstalled(build))
+        assertTrue(terminal?.promotionCommitted == true)
+        assertEquals(build.sizeBytes, terminal?.availableBytes)
+    }
+
+    @Test
+    fun `promotion postcondition failure is not reported as committed`() = runTest {
+        partFile.writeBytes(payload)
+        val arbiter = PromotionCommitArbiter()
+        var terminal: ModelTransferByteSnapshot? = null
+        val store = ModelStore(
+            root = temporaryFolder.root,
+            client = OkHttpClient(),
+            freeBytesProvider = { Long.MAX_VALUE },
+            verifiedFilePromoter = { _, _ -> Unit },
+        )
+
+        val failure = runCatching {
+            store.ensureAvailableWithTransport(
+                build = build,
+                commitPromotion = arbiter::commit,
+                onTerminalSnapshot = { terminal = it },
+            )
+        }.exceptionOrNull()
+
+        assertTrue(failure is ModelPromotionException)
+        assertEquals(PromotionCommitState.FAILED, arbiter.state())
+        assertFalse(terminal?.promotionCommitted == true)
+        assertEquals(payload.toList(), partFile.readBytes().toList())
+        assertFalse(store.isInstalled(build))
     }
 
     @Test
@@ -759,12 +1058,22 @@ class ModelStoreTest {
             freeBytesProvider = { Long.MAX_VALUE },
             verifiedFilePromoter = { _, _ -> throw IOException("simulated move failure") },
         )
+        var terminal: ModelTransferByteSnapshot? = null
 
-        val failure = runCatching { store.ensureAvailable(build) }.exceptionOrNull()
+        val failure = runCatching {
+            store.ensureAvailableWithTransport(
+                build = build,
+                onTerminalSnapshot = { terminal = it },
+            )
+        }.exceptionOrNull()
 
         assertTrue(failure is ModelPromotionException)
         assertEquals(previousTarget.toList(), target.readBytes().toList())
         assertEquals(payload.toList(), partFile.readBytes().toList())
+        assertEquals(previousTarget.size.toLong(), terminal?.installedBytes)
+        assertEquals(build.sizeBytes, terminal?.partialBytes)
+        assertEquals(build.sizeBytes, terminal?.availableBytes)
+        assertFalse(terminal?.promotionCommitted == true)
     }
 
     @Test
@@ -943,6 +1252,54 @@ private class ChunkedStream(
     private companion object {
         const val CHUNK_BYTES = 4096
         const val SETTLE_MILLIS = 5L
+    }
+}
+
+private class FixedChunkStream(
+    private val body: ByteArray,
+    private val chunkBytes: Int,
+) : InputStream() {
+    private var position = 0
+
+    override fun read(): Int {
+        val single = ByteArray(1)
+        return if (read(single, 0, 1) == -1) -1 else single[0].toInt() and 0xff
+    }
+
+    override fun read(destination: ByteArray, offset: Int, length: Int): Int {
+        if (position >= body.size) return -1
+        val count = minOf(length, chunkBytes, body.size - position)
+        body.copyInto(destination, offset, position, position + count)
+        position += count
+        return count
+    }
+}
+
+private class FirstChunkThenAwaitStream(
+    private val body: ByteArray,
+    private val chunkBytes: Int,
+    private val secondReadBlocked: CompletableDeferred<Unit>,
+    private val releaseRead: CompletableDeferred<Unit>,
+) : InputStream() {
+    private var position = 0
+    private var firstChunkReturned = false
+
+    override fun read(): Int {
+        val single = ByteArray(1)
+        return if (read(single, 0, 1) == -1) -1 else single[0].toInt() and 0xff
+    }
+
+    override fun read(destination: ByteArray, offset: Int, length: Int): Int {
+        if (firstChunkReturned) {
+            secondReadBlocked.complete(Unit)
+            runBlocking { releaseRead.await() }
+            return -1
+        }
+        val count = minOf(length, chunkBytes, body.size - position)
+        body.copyInto(destination, offset, position, position + count)
+        position += count
+        firstChunkReturned = true
+        return count
     }
 }
 
