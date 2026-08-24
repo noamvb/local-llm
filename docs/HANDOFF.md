@@ -35,8 +35,9 @@ It has not been pushed, merged, released, installed, launched, or used to downlo
   immediately cancels OkHttp and retains safely written partial bytes. Owner acquisition and
   directly registered prewarm work capture a process-work epoch. Critical trim invalidates that
   epoch before cancelling both jobs, so a pre-trim request cannot register late and construct
-  the engine or start a transfer afterward; only coordinated unload depends on an engine already
-  existing.
+  the engine or start a transfer afterward. Both paths use one epoch-aware job slot that rejects
+  stale tickets under the coalescing lock, so stale work cannot absorb and discard a valid
+  post-trim request. Only coordinated unload depends on an engine already existing.
 - README, architecture, API guidance, and durable decisions now describe the installed-only
   request boundary and explicit owner acquisition.
 
@@ -75,9 +76,13 @@ An independent read-only Sol/xhigh audit of commit
 scheduling race: the old engine-uninitialized early return could skip cancellation before a
 requested owner/prewarm coroutine constructed the lazy engine. The corrected source moves the
 engine guard to unload only, registers prewarm directly, invalidates a process-work epoch before
-cancellation, and adds stale/pre-trim plus valid/post-trim regressions. Its focused
-`OwnerModelAcquisitionCoordinatorTest` and `PrewarmPolicyTest` gate passed 8 tests with zero
-failures, errors, or skips in 3 minutes 21 seconds.
+cancellation, and adds stale/pre-trim plus valid/post-trim regressions. The focused post-fix
+audit then found one remaining P2 coalescing overlap: a stale lazy job could occupy the active
+slot and absorb a valid current request. Owner acquisition and prewarm now share one testable
+epoch-aware job-slot primitive that rejects stale registration synchronously before coalescing.
+The exact stale-then-current overlap regression is present for both the owner wrapper and the
+shared prewarm slot. The latest focused `OwnerModelAcquisitionCoordinatorTest` and
+`PrewarmPolicyTest` gate passed 9 tests with zero failures, errors, or skips in 27 seconds.
 
 Required full clean gate:
 
@@ -89,9 +94,10 @@ GRADLE_USER_HOME=/private/tmp/localllm-roadmap-20260823.pO7j0d/gradle-manager-do
   -Pkotlin.compiler.execution.strategy=in-process
 ```
 
-The first pre-audit run completed in 14 minutes 31 seconds with 191 tests. After correcting the
-P2 race, the exact same clean/rerun gate completed again with all 100 tasks executed in 1 minute
-35 seconds. The corrected head passed all 193 JVM tests: 148 app and 45 canonical client, with
+The first pre-audit run completed in 14 minutes 31 seconds with 191 tests. The first corrected
+head passed 193 tests in a repeated clean gate. After closing the remaining stale-slot overlap,
+the exact same clean/rerun gate completed again with all 100 tasks executed in 1 minute 57
+seconds. The final corrected head passed all 194 JVM tests: 149 app and 45 canonical client, with
 zero failures, errors, or skips. The app debug APK and client debug AAR assembled. App lint
 reported 24 warnings and no errors; client lint reported no issues.
 

@@ -2,6 +2,7 @@ package com.noamv.localllm
 
 import android.app.Application
 import android.util.Log
+import com.noamv.localllm.engine.EpochProcessJobCoordinator
 import com.noamv.localllm.engine.InferenceScheduler
 import com.noamv.localllm.engine.LiteRtEngine
 import com.noamv.localllm.engine.LlmEngine
@@ -10,9 +11,7 @@ import com.noamv.localllm.engine.OwnerModelAcquisitionCoordinator
 import com.noamv.localllm.engine.ProcessWorkEpoch
 import com.noamv.localllm.engine.shouldPrewarmOnBind
 import com.noamv.localllm.model.ModelStore
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -73,9 +72,16 @@ class LocalLlmApplication : Application() {
         )
     }
 
-    @Volatile
-    private var prewarmJob: Job? = null
-    private val prewarmJobLock = Any()
+    private val installedPrewarm by lazy {
+        EpochProcessJobCoordinator(
+            scope = applicationScope,
+            workEpoch = processWorkEpoch,
+            work = {
+                if (shouldPrewarmOnBind(engine.status.value)) engine.prepare()
+            },
+            onFailure = { error -> Log.w(TAG, "Installed model preparation failed", error) },
+        )
+    }
 
     /**
      * Explicit owner action that acquires, then loads, the model and keeps going when the
@@ -94,36 +100,6 @@ class LocalLlmApplication : Application() {
         return ownerAcquisition.start(ticket)
     }
 
-    /** Process-owned, installed-artifact-only preparation used by authorized prewarm. */
-    private fun prepareInstalledModel(ticket: Long): Job {
-        synchronized(prewarmJobLock) {
-            prewarmJob?.takeIf { it.isActive }?.let { return it }
-
-            // Register the lazy job before it can complete. The earlier launch-then-store
-            // sequence allowed a fast failure to finish before prepareJob was assigned,
-            // after which callers could retain a stale completed job.
-            lateinit var newJob: Job
-            newJob = applicationScope.launch(start = CoroutineStart.LAZY) {
-                if (!processWorkEpoch.isCurrent(ticket)) return@launch
-                try {
-                    if (shouldPrewarmOnBind(engine.status.value)) engine.prepare()
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (error: Throwable) {
-                    Log.w(TAG, "Installed model preparation failed", error)
-                }
-            }
-            prewarmJob = newJob
-            newJob.invokeOnCompletion {
-                synchronized(prewarmJobLock) {
-                    if (prewarmJob === newJob) prewarmJob = null
-                }
-            }
-            newJob.start()
-            return newJob
-        }
-    }
-
     /**
      * Loads an already-downloaded model ahead of the first request, so Engine.initialize()
      * overlaps with the user reading the screen instead of blocking the insight card.
@@ -137,7 +113,7 @@ class LocalLlmApplication : Application() {
         // Registration is synchronous, but engine/status disk work remains inside the
         // process coroutine. This lets critical trim cancel the complete request instead
         // of racing an untracked wrapper that could register preparation afterward.
-        prepareInstalledModel(ticket)
+        installedPrewarm.start(ticket)
     }
 
     // The granular TRIM_MEMORY_* levels are deprecated from API 34, but no replacement
@@ -153,7 +129,7 @@ class LocalLlmApplication : Application() {
         // lifecycle coordinator and closes only after generation reaches a safe boundary.
         processWorkEpoch.invalidate()
         ownerAcquisition.cancel()
-        synchronized(prewarmJobLock) { prewarmJob?.cancel() }
+        installedPrewarm.cancel()
         if (!engineDelegate.isInitialized()) return
         applicationScope.launch { engine.unload() }
     }

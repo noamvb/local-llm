@@ -73,7 +73,7 @@ class OwnerModelAcquisitionCoordinatorTest {
     }
 
     @Test
-    fun `request captured before critical trim cannot begin after trim invalidates it`() = runTest {
+    fun `stale owner request cannot absorb valid post-trim acquisition`() = runTest {
         val workEpoch = ProcessWorkEpoch()
         val calls = AtomicInteger()
         val coordinator = OwnerModelAcquisitionCoordinator(
@@ -86,10 +86,12 @@ class OwnerModelAcquisitionCoordinatorTest {
 
         workEpoch.invalidate()
         val staleJob = coordinator.start(preTrimTicket)
+        val currentJob = coordinator.start()
         advanceUntilIdle()
 
         assertTrue(staleJob.isCompleted)
-        assertEquals(0, calls.get())
+        assertTrue(currentJob.isCompleted)
+        assertEquals(1, calls.get())
     }
 
     @Test
@@ -107,6 +109,28 @@ class OwnerModelAcquisitionCoordinatorTest {
         coordinator.start()
         advanceUntilIdle()
 
+        assertEquals(1, calls.get())
+    }
+
+    @Test
+    fun `shared prewarm slot rejects stale registration before coalescing current work`() = runTest {
+        val workEpoch = ProcessWorkEpoch()
+        val calls = AtomicInteger()
+        val prewarm = EpochProcessJobCoordinator(
+            scope = this,
+            workEpoch = workEpoch,
+            work = { calls.incrementAndGet() },
+            onFailure = { throw AssertionError("unexpected failure", it) },
+        )
+        val preTrimTicket = workEpoch.ticket()
+
+        workEpoch.invalidate()
+        val staleJob = prewarm.start(preTrimTicket)
+        val currentJob = prewarm.start()
+        advanceUntilIdle()
+
+        assertTrue(staleJob.isCompleted)
+        assertTrue(currentJob.isCompleted)
         assertEquals(1, calls.get())
     }
 }

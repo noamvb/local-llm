@@ -105,7 +105,9 @@ contiguous allocation. Two decisions follow:
 - `onTrimMemory(TRIM_MEMORY_RUNNING_CRITICAL)` first invalidates the process-work epoch,
   then cancels process-owned acquisition and directly registered prewarm work while
   preserving any resumable partial download. A request captured before trim cannot
-  register late and construct the engine afterward. Only the coordinated unload is
+  register late and construct the engine afterward: the shared epoch-aware job slot rejects
+  stale tickets under its coalescing lock, before they can absorb valid post-trim work. Only
+  the coordinated unload is
   conditional on an engine already existing. Paying a reload is better than having the
   process killed mid-generation.
 
@@ -158,7 +160,9 @@ screen recreation, coalesces repeated taps, and is independent of the native-eng
 lifecycle lock so a missing-model client request never waits behind a multi-gigabyte
 transfer. Critical memory trim invalidates tickets captured by owner acquisition and
 prewarm before cancelling both registered jobs, so scheduling delay cannot resurrect
-pre-trim work. Durable process-death transfer and a foreground-service handoff remain
+pre-trim work. Both paths use the same job-slot primitive, which rejects a stale ticket
+synchronously before it can occupy the slot or coalesce a current request. Durable
+process-death transfer and a foreground-service handoff remain
 outside this Stage 1 boundary.
 
 One coroutine-owned transfer coordinator serializes download, deletion, and pruning

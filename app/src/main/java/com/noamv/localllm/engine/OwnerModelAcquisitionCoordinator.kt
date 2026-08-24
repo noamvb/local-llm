@@ -25,16 +25,16 @@ internal class ProcessWorkEpoch {
 }
 
 /**
- * Process-owned owner-acquisition job boundary reached only from the manager action.
+ * One epoch-aware slot for process-owned model work.
  *
- * Repeated taps share the active job. Cancellation propagates into ModelStore so its
- * resumable partial-preservation rules remain authoritative. The epoch closes the race
- * where critical trim invalidates a request before this coordinator can register it.
+ * Staleness is checked while holding the same lock that owns coalescing. A pre-trim
+ * request that registers late therefore returns an inert completed job and can never
+ * occupy the slot that a valid post-trim request needs.
  */
-internal class OwnerModelAcquisitionCoordinator(
+internal class EpochProcessJobCoordinator(
     private val scope: CoroutineScope,
     private val workEpoch: ProcessWorkEpoch,
-    private val acquireAndPrepare: suspend () -> Unit,
+    private val work: suspend () -> Unit,
     private val onFailure: (Throwable) -> Unit,
 ) {
     private val lock = Any()
@@ -42,14 +42,17 @@ internal class OwnerModelAcquisitionCoordinator(
 
     fun start(): Job = start(workEpoch.ticket())
 
-    internal fun start(ticket: Long): Job = synchronized(lock) {
+    fun start(ticket: Long): Job = synchronized(lock) {
+        if (!workEpoch.isCurrent(ticket)) return completedJob()
         activeJob?.takeIf { it.isActive }?.let { return it }
 
         lateinit var newJob: Job
         newJob = scope.launch(start = CoroutineStart.LAZY) {
+            // Trim can invalidate the ticket after synchronous registration but before
+            // the dispatcher runs this coroutine. Keep the execution-time fence too.
             if (!workEpoch.isCurrent(ticket)) return@launch
             try {
-                acquireAndPrepare()
+                work()
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
@@ -69,4 +72,33 @@ internal class OwnerModelAcquisitionCoordinator(
     fun cancel() {
         synchronized(lock) { activeJob?.cancel() }
     }
+
+    private fun completedJob(): Job = Job().apply { complete() }
+}
+
+/**
+ * Process-owned owner-acquisition job boundary reached only from the manager action.
+ *
+ * Repeated taps share the active job. Cancellation propagates into ModelStore so its
+ * resumable partial-preservation rules remain authoritative. The epoch closes the race
+ * where critical trim invalidates a request before this coordinator can register it.
+ */
+internal class OwnerModelAcquisitionCoordinator(
+    scope: CoroutineScope,
+    workEpoch: ProcessWorkEpoch,
+    acquireAndPrepare: suspend () -> Unit,
+    onFailure: (Throwable) -> Unit,
+) {
+    private val jobs = EpochProcessJobCoordinator(
+        scope = scope,
+        workEpoch = workEpoch,
+        work = acquireAndPrepare,
+        onFailure = onFailure,
+    )
+
+    fun start(): Job = jobs.start()
+
+    internal fun start(ticket: Long): Job = jobs.start(ticket)
+
+    fun cancel() = jobs.cancel()
 }
