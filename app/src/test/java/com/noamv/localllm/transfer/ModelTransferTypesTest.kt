@@ -16,6 +16,8 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 class ModelTransferTypesTest {
     private val descriptor = ModelTransferDescriptor(
@@ -111,6 +113,116 @@ class ModelTransferTypesTest {
         assertEquals(ModelTransferPhase.CANCELLED, coordinator.status.value.phase)
         assertEquals(500, coordinator.status.value.bytes.availableBytes)
         assertNull(coordinator.status.value.failureCategory)
+    }
+
+    @Test
+    fun `exact storage refresh updates terminal bytes but never a newer session`() {
+        val coordinator = ModelTransferStatusCoordinator(descriptor)
+        coordinator.begin(30, TransferNetworkPolicy.UNMETERED_WIFI, partialBytes = 100)
+        coordinator.publish(30, ModelTransferPhase.DOWNLOADING, 105, 5)
+        coordinator.cancel(30, TransferStopReason.OWNER_CANCELLED)
+
+        // A same-percent disk write discovered after cancellation becomes terminal truth.
+        coordinator.refreshStorageBytes(30, availableBytes = 109, transferredThisRunBytes = 9)
+        assertEquals(109L, coordinator.status.value.bytes.availableBytes)
+        assertEquals(891L, coordinator.status.value.bytes.remainingBytes)
+        assertEquals(9L, coordinator.status.value.bytes.transferredThisRunBytes)
+
+        coordinator.begin(31, TransferNetworkPolicy.UNMETERED_WIFI, partialBytes = 200)
+        coordinator.refreshStorageBytes(30, availableBytes = 999, transferredThisRunBytes = 899)
+        assertEquals(31L, coordinator.status.value.sessionId)
+        assertEquals(200L, coordinator.status.value.bytes.availableBytes)
+    }
+
+    @Test
+    fun `committed promotion overrides same-session cancellation with exact storage truth`() {
+        val coordinator = ModelTransferStatusCoordinator(descriptor)
+        coordinator.begin(32, TransferNetworkPolicy.UNMETERED_WIFI, partialBytes = 100)
+        coordinator.cancel(32, TransferStopReason.SERVICE_TIMEOUT)
+
+        coordinator.completeCommittedPromotion(
+            sessionId = 32,
+            availableBytes = 1_000,
+            transferredThisRunBytes = 900,
+        )
+
+        assertEquals(ModelTransferPhase.COMPLETED, coordinator.status.value.phase)
+        assertEquals(1_000L, coordinator.status.value.bytes.availableBytes)
+        assertEquals(0L, coordinator.status.value.bytes.remainingBytes)
+        assertEquals(900L, coordinator.status.value.bytes.transferredThisRunBytes)
+        assertNull(coordinator.status.value.stopReason)
+
+        coordinator.begin(33, TransferNetworkPolicy.UNMETERED_WIFI, partialBytes = 200)
+        coordinator.completeCommittedPromotion(32, 1_000, 900)
+        assertEquals(33L, coordinator.status.value.sessionId)
+        assertEquals(ModelTransferPhase.STARTING, coordinator.status.value.phase)
+    }
+
+    @Test
+    fun `cancellation winner prevents promotion`() {
+        val arbiter = PromotionCommitArbiter()
+        var promoted = false
+
+        assertTrue(arbiter.cancel())
+        assertFalse(arbiter.commit { promoted = true })
+
+        assertFalse(promoted)
+        assertEquals(PromotionCommitState.CANCELLED, arbiter.state())
+    }
+
+    @Test
+    fun `promotion claim makes concurrent cancellation lose without waiting for file work`() {
+        val arbiter = PromotionCommitArbiter()
+        val promotionEntered = CountDownLatch(1)
+        val releasePromotion = CountDownLatch(1)
+        var committed = false
+        val promotion = Thread {
+            committed = arbiter.commit {
+                promotionEntered.countDown()
+                check(releasePromotion.await(5, TimeUnit.SECONDS))
+            }
+        }
+        promotion.start()
+        assertTrue(promotionEntered.await(5, TimeUnit.SECONDS))
+
+        val before = System.nanoTime()
+        assertFalse(arbiter.cancel())
+        val elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
+        assertTrue("timeout cancellation must not await file I/O", elapsedMillis < 1_000L)
+
+        releasePromotion.countDown()
+        promotion.join(5_000L)
+        assertFalse(promotion.isAlive)
+        assertTrue(committed)
+        assertEquals(PromotionCommitState.COMMITTED, arbiter.state())
+    }
+
+    @Test
+    fun `failed promotion owns failure rather than cancellation`() {
+        val arbiter = PromotionCommitArbiter()
+
+        val failure = runCatching {
+            arbiter.commit { throw IOException("move") }
+        }.exceptionOrNull()
+
+        assertTrue(failure is IOException)
+        assertFalse(arbiter.cancel())
+        assertEquals(PromotionCommitState.FAILED, arbiter.state())
+    }
+
+    @Test
+    fun `uncommitted promotion terminal snapshot remains a storage failure`() {
+        val coordinator = ModelTransferStatusCoordinator(descriptor)
+        coordinator.begin(34, TransferNetworkPolicy.UNMETERED_WIFI, partialBytes = 1_000)
+        coordinator.publish(34, ModelTransferPhase.INSTALLING, 1_000, 0)
+        coordinator.refreshStorageBytes(34, availableBytes = 1_000, transferredThisRunBytes = 0)
+        coordinator.fail(34, ModelPromotionException(build, IOException("missing target")))
+
+        assertEquals(ModelTransferPhase.FAILED, coordinator.status.value.phase)
+        assertEquals(
+            ModelTransferFailureCategory.STORAGE,
+            coordinator.status.value.failureCategory,
+        )
     }
 
     @Test
@@ -247,6 +359,37 @@ class ModelTransferTypesTest {
             TransferNetworkBlockReason.REQUIRES_UNMETERED_WIFI,
             coordinator.status.value.blockReason,
         )
+    }
+
+    @Test
+    fun `lease policy reason wins whether acquisition failure or monitor terminal arrives first`() {
+        val failure = ModelAcquisitionException(build, IOException("cancelled socket"))
+        val exactReason = TransferNetworkBlockReason.REQUIRES_UNMETERED_WIFI
+
+        // Lease/call invalidation is visible before the main-thread monitor callback.
+        val failureFirst = ModelTransferStatusCoordinator(descriptor)
+        failureFirst.begin(40, TransferNetworkPolicy.UNMETERED_WIFI, partialBytes = 100)
+        failureFirst.block(
+            40,
+            resolveTransferNetworkBlockReason(failure, exactReason)!!,
+        )
+        failureFirst.fail(40, failure)
+        assertEquals(ModelTransferPhase.POLICY_BLOCKED, failureFirst.status.value.phase)
+        assertEquals(exactReason, failureFirst.status.value.blockReason)
+
+        // The monitor publishes first; the later acquisition failure is idempotent.
+        val monitorFirst = ModelTransferStatusCoordinator(descriptor)
+        monitorFirst.begin(41, TransferNetworkPolicy.UNMETERED_WIFI, partialBytes = 100)
+        monitorFirst.block(41, exactReason)
+        monitorFirst.block(
+            41,
+            resolveTransferNetworkBlockReason(failure, exactReason)!!,
+        )
+        monitorFirst.fail(41, failure)
+        monitorFirst.begin(42, TransferNetworkPolicy.UNMETERED_WIFI, partialBytes = 200)
+        monitorFirst.block(41, TransferNetworkBlockReason.NO_VALIDATED_NETWORK)
+        assertEquals(42L, monitorFirst.status.value.sessionId)
+        assertEquals(ModelTransferPhase.STARTING, monitorFirst.status.value.phase)
     }
 
     private fun snapshot(

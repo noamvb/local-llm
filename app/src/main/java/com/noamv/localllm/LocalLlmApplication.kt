@@ -21,7 +21,7 @@ import com.noamv.localllm.transfer.ModelTransferStatus
 import com.noamv.localllm.transfer.ModelTransferStatusCoordinator
 import com.noamv.localllm.transfer.TransferNetworkPolicy
 import com.noamv.localllm.transfer.TransferStopReason
-import com.noamv.localllm.transfer.findTransferNetworkBlockReason
+import com.noamv.localllm.transfer.resolveTransferNetworkBlockReason
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -160,27 +160,47 @@ class LocalLlmApplication : Application() {
         transport: ModelAcquisitionTransport,
     ) {
         try {
-            modelAcquirer.acquirePreferredArtifact(transport) { progress ->
-                transferStatusCoordinator.publish(
-                    sessionId = sessionId,
-                    phase = when (progress.stage) {
-                        ArtifactAcquisitionStage.DOWNLOADING -> ModelTransferPhase.DOWNLOADING
-                        ArtifactAcquisitionStage.VERIFYING -> ModelTransferPhase.VERIFYING
-                        ArtifactAcquisitionStage.INSTALLING -> ModelTransferPhase.INSTALLING
-                    },
-                    availableBytes = progress.availableBytes,
-                    transferredThisRunBytes = progress.transferredThisRunBytes,
-                )
-            }
+            modelAcquirer.acquirePreferredArtifact(
+                transport = transport,
+                onProgress = { progress ->
+                    transferStatusCoordinator.publish(
+                        sessionId = sessionId,
+                        phase = when (progress.stage) {
+                            ArtifactAcquisitionStage.DOWNLOADING -> ModelTransferPhase.DOWNLOADING
+                            ArtifactAcquisitionStage.VERIFYING -> ModelTransferPhase.VERIFYING
+                            ArtifactAcquisitionStage.INSTALLING -> ModelTransferPhase.INSTALLING
+                        },
+                        availableBytes = progress.availableBytes,
+                        transferredThisRunBytes = progress.transferredThisRunBytes,
+                    )
+                },
+                onTerminalSnapshot = { snapshot ->
+                    if (snapshot.promotionCommitted) {
+                        transferStatusCoordinator.completeCommittedPromotion(
+                            sessionId = sessionId,
+                            availableBytes = snapshot.availableBytes,
+                            transferredThisRunBytes = snapshot.transferredThisRunBytes,
+                        )
+                    } else {
+                        transferStatusCoordinator.refreshStorageBytes(
+                            sessionId = sessionId,
+                            availableBytes = snapshot.availableBytes,
+                            transferredThisRunBytes = snapshot.transferredThisRunBytes,
+                        )
+                    }
+                },
+            )
             transferStatusCoordinator.publish(
                 sessionId = sessionId,
                 phase = ModelTransferPhase.COMPLETED,
-                availableBytes = modelTransferStatus.value.descriptor.expectedBytes,
             )
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Throwable) {
-            val policyReason = findTransferNetworkBlockReason(error)
+            val policyReason = resolveTransferNetworkBlockReason(
+                error = error,
+                leaseTerminalReason = transport.terminalNetworkBlockReason(),
+            )
             if (policyReason != null) {
                 transferStatusCoordinator.block(sessionId, policyReason)
             } else {

@@ -19,6 +19,7 @@ import com.noamv.localllm.transfer.ModelRole
 import com.noamv.localllm.transfer.ModelTransferDescriptor
 import com.noamv.localllm.transfer.ModelTransferSessionOwner
 import com.noamv.localllm.transfer.ModelTransferStatus
+import com.noamv.localllm.transfer.PromotionCommitArbiter
 import com.noamv.localllm.transfer.TransferAcquisitionPath
 import com.noamv.localllm.transfer.TransferByteSnapshot
 import com.noamv.localllm.transfer.TransferNetworkBlockReason
@@ -33,11 +34,10 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeout
 import okhttp3.Call
 
 internal sealed interface ModelTransferCommand {
@@ -71,6 +71,36 @@ internal enum class ModelTransferLaunchResult {
     FAILED,
 }
 
+internal class DeliveredStartIdTracker {
+    private var latest = 0
+
+    fun record(startId: Int) {
+        latest = startId
+    }
+
+    fun latest(): Int = latest
+}
+
+internal enum class TransferCancellationDisposition {
+    CLEAN_UP_NOW,
+    CANCEL_JOB_AND_AWAIT_SETTLEMENT,
+    AWAIT_PROMOTION_OR_FAILURE,
+}
+
+internal fun transferCancellationDisposition(
+    cancellationWon: Boolean,
+    jobStarted: Boolean,
+): TransferCancellationDisposition = when {
+    !jobStarted -> TransferCancellationDisposition.CLEAN_UP_NOW
+    cancellationWon -> TransferCancellationDisposition.CANCEL_JOB_AND_AWAIT_SETTLEMENT
+    else -> TransferCancellationDisposition.AWAIT_PROMOTION_OR_FAILURE
+}
+
+internal fun shouldForcePlatformTimeoutCleanup(
+    timedOutSessionId: Long,
+    activeSession: ActiveTransferSession?,
+): Boolean = activeSession?.id == timedOutSessionId
+
 internal inline fun runPostForegroundTransferSetup(
     setup: () -> Unit,
     onFailure: (Throwable) -> Unit,
@@ -92,10 +122,13 @@ class ModelTransferService : Service() {
     private var networkRegistration: TransferNetworkRegistration? = null
     private var processCancellationRegistration: AutoCloseable? = null
     private var activeLease: TransferNetworkLease? = null
+    private var activePromotionArbiter: PromotionCommitArbiter? = null
     private var activeJob: Job? = null
+    private var activeJobStarted = false
+    private var transferDeadlineJob: Job? = null
     private var statusCollection: Job? = null
     private var foregroundStarted = false
-    private var latestStartId = 0
+    private val deliveredStartIds = DeliveredStartIdTracker()
 
     override fun onCreate() {
         super.onCreate()
@@ -105,36 +138,36 @@ class ModelTransferService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Record every delivered command before routing. Cancel, invalid, and retry
+        // commands are starts too, and cleanup must fence the true latest start ID.
+        deliveredStartIds.record(startId)
         val command = routeModelTransferCommand(
             action = intent?.action,
             allowMeteredOnce = intent?.getBooleanExtra(EXTRA_ALLOW_METERED_ONCE, false) == true,
             startFlags = flags,
         )
         when (command) {
-            is ModelTransferCommand.Start -> handleStart(command.policy, startId)
+            is ModelTransferCommand.Start -> handleStart(command.policy)
             ModelTransferCommand.Cancel -> cancelAndStop(TransferStopReason.OWNER_CANCELLED)
-            ModelTransferCommand.Invalid -> if (sessions.active() == null) stopSelf(startId)
+            ModelTransferCommand.Invalid -> if (sessions.active() == null) stopLatestStart()
         }
         return START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun handleStart(policy: TransferNetworkPolicy, startId: Int) {
+    private fun handleStart(policy: TransferNetworkPolicy) {
         when (val decision = sessions.start(policy)) {
             is TransferStartDecision.Coalesced -> {
-                latestStartId = startId
                 // A repeated explicit start shares the current run and cannot widen its
                 // one-run network policy.
                 updateForeground(app.modelTransferStatus.value)
             }
-            is TransferStartDecision.Started -> startSession(decision.session, startId)
+            is TransferStartDecision.Started -> startSession(decision.session)
         }
     }
 
-    private fun startSession(session: ActiveTransferSession, startId: Int) {
-        latestStartId = startId
-
+    private fun startSession(session: ActiveTransferSession) {
         // Platform timing comes first. This preflight notification uses only checked-in
         // constants: no model directory, network, engine, or transfer work is touched
         // before the service is visibly foreground.
@@ -178,30 +211,32 @@ class ModelTransferService : Service() {
             TransferAcquisitionPath.LOCAL_VERIFY_AND_PROMOTE -> null
         }
         activeLease = lease
+        val promotionArbiter = PromotionCommitArbiter()
+        activePromotionArbiter = promotionArbiter
 
         val transport = if (lease == null) {
             ModelAcquisitionTransport(
                 callFactory = NO_NETWORK_CALL_FACTORY,
                 validateNetwork = {},
+                terminalNetworkBlockReason = { null },
+                commitPromotion = promotionArbiter::commit,
             )
         } else {
             ModelAcquisitionTransport(
                 callFactory = lease.bind(app.pinnedTransferCallFactory(lease.network)),
                 validateNetwork = lease::validateOrThrow,
+                terminalNetworkBlockReason = lease::terminalBlockReason,
+                commitPromotion = promotionArbiter::commit,
             )
         }
 
         lateinit var ownedJob: Job
         ownedJob = serviceScope.launch(start = CoroutineStart.LAZY) {
             try {
-                withTimeout(TRANSFER_DEADLINE_MILLIS) {
-                    app.performOwnerModelTransfer(
-                        sessionId = session.id,
-                        transport = transport,
-                    )
-                }
-            } catch (_: TimeoutCancellationException) {
-                app.publishOwnerTransferCancelled(session.id, TransferStopReason.SERVICE_TIMEOUT)
+                app.performOwnerModelTransfer(
+                    sessionId = session.id,
+                    transport = transport,
+                )
             } catch (_: kotlinx.coroutines.CancellationException) {
                 // The cancelling owner publishes its terminal reason before cancelling.
             } catch (error: Throwable) {
@@ -212,6 +247,7 @@ class ModelTransferService : Service() {
             }
         }
         activeJob = ownedJob
+        activeJobStarted = false
 
         processCancellationRegistration = app.foregroundTransferCancellation.register(
             session.id,
@@ -251,10 +287,27 @@ class ModelTransferService : Service() {
         }
 
         // Monitoring can synchronously reject a lease that changed after admission.
-        if (sessions.active()?.id == session.id) ownedJob.start()
+        if (sessions.active()?.id == session.id) {
+            // The deadline claims the same arbiter before cancelling the acquisition Job;
+            // coroutine timeout alone would leave a check-to-promotion race.
+            transferDeadlineJob = serviceScope.launch {
+                delay(TRANSFER_DEADLINE_MILLIS)
+                if (sessions.active()?.id == session.id) {
+                    cancelAndStop(TransferStopReason.SERVICE_TIMEOUT)
+                }
+            }
+            // Set first: Main.immediate may enter the coroutine and its finally before
+            // Job.start() returns, and cleanup must not resurrect a stale true value.
+            activeJobStarted = true
+            if (!ownedJob.start()) {
+                activeJobStarted = false
+                finishServiceSession(session.id)
+            }
+        }
     }
 
     private fun failSetupAndStop(session: ActiveTransferSession, error: Throwable) {
+        activePromotionArbiter?.cancel()
         activeLease?.invalidate(TransferNetworkBlockReason.NO_VALIDATED_NETWORK)
         activeJob?.cancel()
         runCatching {
@@ -270,28 +323,47 @@ class ModelTransferService : Service() {
     ) {
         val session = sessions.active()
         if (session == null) {
-            stopSelf()
+            stopLatestStart()
             return
         }
+        // Claim cancellation before touching the network. If promotion already claimed
+        // COMMITTING, it owns the terminal outcome and this callback must not publish a
+        // contradictory CANCELLED/POLICY_BLOCKED state.
+        val cancellationWon = activePromotionArbiter?.cancel() ?: true
         activeLease?.invalidate(
             networkReason ?: TransferNetworkBlockReason.NO_VALIDATED_NETWORK,
         )
-        if (networkReason != null) {
-            app.publishOwnerTransferPolicyBlocked(session.id, networkReason)
-        } else {
-            app.publishOwnerTransferCancelled(session.id, reason)
+        if (cancellationWon) {
+            if (networkReason != null) {
+                app.publishOwnerTransferPolicyBlocked(session.id, networkReason)
+            } else {
+                app.publishOwnerTransferCancelled(session.id, reason)
+            }
+            updateForeground(app.modelTransferStatus.value)
         }
-        updateForeground(app.modelTransferStatus.value)
-        // Service owns this actual acquisition Job. Cancellation reaches ModelStore's
-        // OkHttp watcher immediately and preserves every safely written partial byte.
-        activeJob?.cancel()
-        finishServiceSession(session.id)
+        when (transferCancellationDisposition(cancellationWon, activeJobStarted)) {
+            TransferCancellationDisposition.CLEAN_UP_NOW -> {
+                activeJob?.cancel()
+                finishServiceSession(session.id)
+            }
+            TransferCancellationDisposition.CANCEL_JOB_AND_AWAIT_SETTLEMENT -> {
+                // Service owns the actual acquisition Job. Cancellation reaches OkHttp
+                // immediately, while the session/collector/foreground stay owned until
+                // ModelStore publishes its exact terminal storage snapshot in finally.
+                activeJob?.cancel()
+            }
+            TransferCancellationDisposition.AWAIT_PROMOTION_OR_FAILURE -> {
+                // Promotion already claimed the irreversible outcome. Do not cancel its
+                // parent or admit a new session; ownedJob.finally performs exact cleanup.
+            }
+        }
     }
 
     private fun finishServiceSession(sessionId: Long) {
         if (!sessions.finish(sessionId)) return
         activeLease?.invalidate(TransferNetworkBlockReason.NO_VALIDATED_NETWORK)
         activeLease = null
+        activePromotionArbiter = null
         networkRegistration?.close()
         networkRegistration = null
         processCancellationRegistration?.close()
@@ -299,11 +371,19 @@ class ModelTransferService : Service() {
         statusCollection?.cancel()
         statusCollection = null
         activeJob = null
+        activeJobStarted = false
+        transferDeadlineJob?.cancel()
+        transferDeadlineJob = null
         if (foregroundStarted) {
             stopForeground(STOP_FOREGROUND_REMOVE)
             foregroundStarted = false
         }
-        stopSelf(latestStartId)
+        stopLatestStart()
+    }
+
+    private fun stopLatestStart() {
+        val latest = deliveredStartIds.latest()
+        if (latest > 0) stopSelfResult(latest) else stopSelf()
     }
 
     private fun preflightStatus(session: ActiveTransferSession): ModelTransferStatus {
@@ -379,20 +459,44 @@ class ModelTransferService : Service() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
-    /** Android 15 data-sync timeout: cancel first, then synchronously leave foreground. */
+    /** Android 15 data-sync timeout: cancel now and force bounded foreground cleanup. */
     override fun onTimeout(startId: Int, fgsType: Int) {
-        cancelAndStop(TransferStopReason.SERVICE_TIMEOUT)
+        handlePlatformTimeout()
     }
 
     override fun onTimeout(startId: Int) {
+        handlePlatformTimeout()
+    }
+
+    private fun handlePlatformTimeout() {
+        val timedOutSessionId = sessions.active()?.id
         cancelAndStop(TransferStopReason.SERVICE_TIMEOUT)
+        if (timedOutSessionId == null) return
+
+        // Normal cleanup waits for ModelStore's exact terminal snapshot. Android's
+        // dataSync timeout cannot wait without bound, so a short app-owned watchdog
+        // forces this exact service session out of foreground/started state. The global
+        // session ID and ModelStore mutex fence any later settling callback/file work.
+        serviceScope.launch {
+            delay(PLATFORM_TIMEOUT_STOP_GRACE_MILLIS)
+            if (shouldForcePlatformTimeoutCleanup(timedOutSessionId, sessions.active())) {
+                activeJob?.cancel()
+                finishServiceSession(timedOutSessionId)
+            }
+        }
     }
 
     override fun onDestroy() {
         sessions.active()?.let { session ->
-            app.publishOwnerTransferCancelled(session.id, TransferStopReason.SERVICE_DESTROYED)
+            val cancellationWon = activePromotionArbiter?.cancel() ?: true
+            if (cancellationWon) {
+                app.publishOwnerTransferCancelled(
+                    session.id,
+                    TransferStopReason.SERVICE_DESTROYED,
+                )
+                activeJob?.cancel()
+            }
             activeLease?.invalidate(TransferNetworkBlockReason.NO_VALIDATED_NETWORK)
-            activeJob?.cancel()
             sessions.finish(session.id)
         }
         networkRegistration?.close()
@@ -409,6 +513,7 @@ class ModelTransferService : Service() {
         internal const val CHANNEL_ID = "model_transfer"
         internal const val NOTIFICATION_ID = 2001
         internal const val TRANSFER_DEADLINE_MILLIS = 5L * 60L * 60L * 1_000L
+        internal const val PLATFORM_TIMEOUT_STOP_GRACE_MILLIS = 2_000L
         private const val CANCEL_REQUEST_CODE = 2002
         private const val TAG = "ModelTransferService"
         private val NO_NETWORK_CALL_FACTORY = Call.Factory {

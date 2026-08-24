@@ -45,6 +45,10 @@ Client status, prewarm, self-test, and generation paths use installed artifacts 
 never initiate or resume a network transfer; a client request made before installation
 receives `MODEL_NOT_READY`. The foreground service is non-sticky and stops after SHA-256
 verification and atomic installation, so process death cannot silently restart a download.
+Cancellation retains foreground/session ownership until ModelStore reports exact terminal
+disk state; Android's `dataSync` timeout additionally forces that exact service session to
+stop after a two-second app watchdog. A process-monotonic session ID fences any later disk
+settlement from a newly recreated service.
 Loading the installed model is a separate network-free manager/client action.
 The artifact comes from the public, ungated
 [litert-community](https://huggingface.co/litert-community) HuggingFace repositories and

@@ -62,10 +62,20 @@ class ModelTransferManifestTest {
         assertFalse(source.contains("return START_STICKY"))
         assertFalse(source.contains("checkSelfPermission"))
         assertTrue(session.contains("serviceScope.launch(start = CoroutineStart.LAZY)"))
+        assertTrue(session.contains("delay(TRANSFER_DEADLINE_MILLIS)"))
+        assertTrue(session.contains("cancelAndStop(TransferStopReason.SERVICE_TIMEOUT)"))
+        assertFalse(session.contains("withTimeout("))
         assertTrue(session.contains("TransferAcquisitionPath.LOCAL_VERIFY_AND_PROMOTE"))
         assertTrue(session.indexOf("acquisitionPath") < session.indexOf("networks.acquire"))
         assertTrue(source.contains("NO_NETWORK_CALL_FACTORY"))
         assertTrue(source.contains("runPostForegroundTransferSetup"))
+        val command = source.substringAfter("override fun onStartCommand(")
+            .substringBefore("override fun onBind(")
+        assertTrue(
+            command.indexOf("deliveredStartIds.record(startId)") <
+                command.indexOf("routeModelTransferCommand"),
+        )
+        assertTrue(source.contains("stopSelfResult(latest)"))
         val application = projectFile(
             "app/src/main/java/com/noamv/localllm/LocalLlmApplication.kt",
         ).readText()
@@ -74,7 +84,9 @@ class ModelTransferManifestTest {
         assertFalse(manifest.contains("BOOT_COMPLETED"))
         val timeout = source.substringAfter("override fun onTimeout(startId: Int, fgsType: Int)")
             .substringBefore("override fun onDestroy()")
-        assertTrue(timeout.contains("cancelAndStop(TransferStopReason.SERVICE_TIMEOUT)"))
+        assertTrue(timeout.contains("handlePlatformTimeout()"))
+        assertTrue(timeout.contains("PLATFORM_TIMEOUT_STOP_GRACE_MILLIS"))
+        assertTrue(timeout.contains("finishServiceSession(timedOutSessionId)"))
         val destruction = source.substringAfter("override fun onDestroy()")
             .substringBefore("companion object")
         assertTrue(destruction.contains("activeJob?.cancel()"))

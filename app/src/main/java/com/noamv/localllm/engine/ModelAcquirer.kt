@@ -1,6 +1,7 @@
 package com.noamv.localllm.engine
 
 import com.noamv.localllm.model.ModelBuild
+import com.noamv.localllm.transfer.TransferNetworkBlockReason
 import okhttp3.Call
 
 internal enum class ArtifactAcquisitionStage {
@@ -17,9 +18,21 @@ internal data class ArtifactAcquisitionProgress(
     val transferredThisRunBytes: Long,
 )
 
+internal data class ArtifactAcquisitionByteSnapshot(
+    val build: ModelBuild,
+    val availableBytes: Long,
+    val transferredThisRunBytes: Long,
+    val promotionCommitted: Boolean,
+)
+
 internal data class ModelAcquisitionTransport(
     val callFactory: Call.Factory,
     val validateNetwork: () -> Unit,
+    val terminalNetworkBlockReason: () -> TransferNetworkBlockReason?,
+    val commitPromotion: ((() -> Unit) -> Boolean) = { promotion ->
+        promotion()
+        true
+    },
 )
 
 /**
@@ -34,5 +47,6 @@ internal interface ModelAcquirer {
     suspend fun acquirePreferredArtifact(
         transport: ModelAcquisitionTransport,
         onProgress: (ArtifactAcquisitionProgress) -> Unit = {},
+        onTerminalSnapshot: (ArtifactAcquisitionByteSnapshot) -> Unit = {},
     )
 }

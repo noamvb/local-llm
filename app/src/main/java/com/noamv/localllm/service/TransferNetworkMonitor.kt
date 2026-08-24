@@ -44,6 +44,8 @@ internal class TransferNetworkLease(
     fun validateOrThrow() = callFence.validateOrThrow()
 
     fun bind(callFactory: Call.Factory): Call.Factory = callFence.bind(callFactory)
+
+    fun terminalBlockReason(): TransferNetworkBlockReason? = callFence.terminalBlockReason()
 }
 
 /**
@@ -57,6 +59,10 @@ internal class TransferCallFence(
     private val lock = Any()
     private var terminalReason: TransferNetworkBlockReason? = null
     private val calls = mutableListOf<Call>()
+
+    fun terminalBlockReason(): TransferNetworkBlockReason? = synchronized(lock) {
+        terminalReason
+    }
 
     fun invalidate(reason: TransferNetworkBlockReason): Boolean {
         val toCancel = synchronized(lock) {

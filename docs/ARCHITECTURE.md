@@ -122,6 +122,13 @@ network policy, and downloads at most the preferred artifact when no compatible 
 exists. It stops after verified atomic promotion; installed-only loading remains a separate
 action and acquisition does not iterate the backend fallback list.
 
+Every service instance draws session IDs from one process-wide monotonic source. A started
+transfer retains its session, foreground notification, and status collector after ordinary
+owner, policy, or trim cancellation until ModelStore releases file ownership and publishes
+an exact terminal storage snapshot. Cancellation and verified promotion share a commit
+arbiter: cancellation that claims first prevents promotion; promotion that claims first
+finishes as committed or failed and cannot be relabelled cancelled.
+
 The ID of the last build that initialized successfully is persisted in private app
 preferences. On process recreation, a still-installed compatible proven fallback is tried
 before other installed compatible candidates. Missing candidates are excluded from engine
@@ -166,6 +173,11 @@ active run and cannot turn a Wi-Fi-only run into a metered one. `START_NOT_STICK
 retry intent rejection, and a five-hour app deadline ensure process death or Android 15's
 data-sync timeout never restarts hidden network work. The service stops after verified
 atomic promotion and does not keep the data-sync lifetime open for model initialization.
+On a platform `dataSync` timeout it first requests normal exact-settlement cancellation,
+then forces foreground/session cleanup after a fixed two-second grace if that same session
+is still active. The process-wide session ID and ModelStore mutex fence late callbacks and
+file work from a recreated service. Ordinary cancellation has no watchdog and waits for
+ModelStore's terminal snapshot.
 
 Default admission requires one exact active Android `Network` with `VALIDATED`, `INTERNET`,
 `NOT_METERED`, and Wi-Fi transport. The one-run override relaxes only the final two checks.
@@ -199,13 +211,18 @@ strict forward progress, recover once from HTTP 416, and cap both response count
 bytes. Space checks charge only the bytes still missing plus fixed headroom. Network,
 HTTP/range, storage, incomplete body, checksum, and promotion failures remain separate
 typed causes for later service-level classification. Progress is coalesced to changed
-integer percentages while retaining monotonic initial and terminal states.
+integer percentages while retaining monotonic initial and terminal states. UI progress and
+retained-file length are distinct from cumulative transfer cost: every successfully read
+HTTP response-body byte is counted, even if a later size check rejects it, the partial is
+rolled back, or a server ignores `Range` and truncates before redownloading.
 
 A complete partial is SHA-256 verified before promotion. Promotion uses an atomic
 same-volume replacement, so the previous known-good target remains installed until its
 replacement is both complete and verified. Cancellation or out-of-memory during
 verification/promotion preserves the recoverable partial and never converts an
 `OutOfMemoryError` into an ordinary acquisition failure.
+The installed-target existence/length postcondition is inside the promotion commit fence,
+so a no-op or malformed promoter is a storage failure rather than a false completion.
 
 Public status has two explicit owners. Native runtime status is durable; active owner
 acquisition is a temporary overlay while the runtime is unloaded. A concurrent client

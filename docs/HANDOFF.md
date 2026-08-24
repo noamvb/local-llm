@@ -14,6 +14,9 @@ This branch is the coherent Stage 1 user-started foreground model-transfer chang
 not been pushed, opened as a pull request, merged, versioned, tagged, released, installed,
 launched on a device, connected through ADB, or used for a real model download. No
 production app, data, endpoint, signing configuration, or external repository was changed.
+The original implementation is preserved in local commit
+`adafbc69a1157de6453c5fad0c56effc18e18976`; the subsequent audit corrections are kept as
+a separate follow-up commit rather than amending that evidence.
 
 The repository has no `docs/PROJECT_STATE.md`. Current state is therefore recorded in the
 repository's existing canonical README, architecture, API contract, decisions, and this
@@ -35,13 +38,15 @@ handoff.
   the active session and cannot widen its one-run network policy.
 - `START_NOT_STICKY`, rejection of null/unknown/retry commands, and a five-hour internal
   deadline prevent process death or platform retry from silently restarting a transfer.
-- Both Android data-sync timeout callbacks route through synchronous cancellation,
-  foreground removal, and `stopSelf` fenced by the latest `startId`. Service destruction
-  cancels its owned job and retains safe partial bytes.
+- Both Android data-sync timeout callbacks request arbiter-aware cancellation immediately.
+  A fixed two-second watchdog then forces the exact still-active session out of foreground
+  and started state if ModelStore has not settled first. Cleanup uses the true latest ID
+  recorded from every delivered start command and `stopSelfResult`.
 - Foreground lifetime ends after SHA-256 verification and atomic promotion. Model
   initialization/inference is deliberately outside the `dataSync` lifetime.
-- A run token/session ID fences progress, terminal state, cleanup, and late events. A
-  terminal or stale event cannot overwrite a newer/terminal session.
+- Session IDs are monotonic across service-object recreation within the app process. They
+  fence progress, terminal state, cleanup, and late events, so an old settling callback
+  cannot collide with a recreated service's first run.
 
 ### Whole-transfer network-cost boundary
 
@@ -80,6 +85,8 @@ handoff.
   validated ranges, bounded 206 response loops, HTTP 416 recovery, maximum-size checks,
   SHA-256 verification, and atomic promotion.
 - Cancellation immediately reaches both the service-owned job and registered OkHttp calls.
+  For a started run, ordinary owner/policy/trim cancellation retains foreground/session
+  ownership until ModelStore releases its files and publishes exact terminal disk state.
   Safely written partial bytes remain available for a later explicit owner action.
 - A known-good installed artifact is never deleted before a replacement verifies and
   atomically promotes. Current single-writer acquisition still refuses to replace an
@@ -87,9 +94,14 @@ handoff.
 - Transfer stages now distinguish downloading, verifying, and installing. Exact byte state
   includes expected size, retained partial at start, current available bytes, remaining
   bytes, and cumulative response-body bytes transferred during this run.
-- Cumulative transfer accounting observes every positive file-write delta, even multiple
-  writes within one integer percentage and a full re-download after HTTP 416/reset. It does
-  not mislabel net file growth as bytes transferred.
+- Cumulative transfer accounting counts every successfully read HTTP response-body byte,
+  separately from retained-file growth. It includes same-percent reads, bytes later rejected
+  and rolled back, and full re-downloads after HTTP 416 or ignored `Range`.
+- Cancellation and verified promotion share one commit arbiter. Cancellation that claims
+  first prevents the atomic move. Promotion that claims first finishes as committed or
+  failed without being relabelled cancelled; target existence/length validation is inside
+  the same commit. Exact terminal snapshots report installed/partial bytes after rollback,
+  checksum deletion, promotion success, or promotion failure.
 
 ### Manager and notification behavior
 
@@ -143,9 +155,17 @@ was being built. The final source includes corrections for all of these findings
 - preflight no longer falsely names the GPU build or reports a zero-byte transfer;
 - installed-but-unloaded models retain a separate acquisition-free Load action;
 - setup failures cannot escape or strand `STARTING` state;
-- policy loss detected by the request validator wins over a delayed callback;
+- policy loss detected by the request validator or lease fence wins over a delayed callback;
 - typed failure classification follows bounded wrapper cause chains;
-- byte accounting is cumulative and reset-safe rather than net file growth;
+- byte accounting counts every response-body read and terminal bytes are refreshed from
+  actual installed/partial storage after cancellation, rollback, checksum deletion, and
+  promotion outcomes;
+- every delivered service start ID participates in exact `stopSelfResult` cleanup;
+- ordinary cancellation waits for a started ModelStore operation to settle, while lazy
+  pre-start rejection cleans immediately and platform timeout has a bounded watchdog;
+- promotion and cancellation have one commit winner, and the installed-target postcondition
+  is inside that arbitration boundary;
+- session IDs cannot collide across service recreation in one process;
 - prewarm engine/status disk work remains off the Binder caller thread;
 - the full four-way epoch/coalescing test evidence was retained after removing the old
   application-owned acquisition wrapper; and
@@ -173,17 +193,17 @@ GRADLE_USER_HOME=/private/tmp/gradle-localllm-foreground-transfer \
   -Pkotlin.compiler.execution.strategy=in-process
 ```
 
-Result: `BUILD SUCCESSFUL` in 1 minute 47 seconds; all 27 Gradle tasks executed.
-XML evidence reports 73 tests across seven suites, with zero failures, zero errors, and
+Result: `BUILD SUCCESSFUL` in 1 minute 33 seconds; all 27 Gradle tasks executed.
+XML evidence reports 89 tests across seven suites, with zero failures, zero errors, and
 zero skips:
 
-- `ModelStoreTest`: 40;
+- `ModelStoreTest`: 44;
 - `ManagerViewModelSchedulerTest`: 8;
 - `ProcessWorkEpochTest`: 4;
 - `ModelTransferManifestTest`: 3;
-- `ModelTransferSessionOwnerTest`: 4;
+- `ModelTransferSessionOwnerTest`: 10;
 - `TransferCallFenceTest`: 3; and
-- `ModelTransferTypesTest`: 11.
+- `ModelTransferTypesTest`: 17.
 
 ### Final full clean gate
 
@@ -249,7 +269,9 @@ compilation, debug assembly, and lint only. It does **not** prove Android runtim
 Not run or observed:
 
 - Android instrumentation, emulator, or physical-device execution;
-- actual foreground-service start timing or Android 15/target-36 timeout delivery;
+- actual foreground-service start timing, Android 15/target-36 timeout delivery, whether
+  the two-second watchdog remains inside the platform grace, or late disk reconciliation
+  after forced timeout cleanup;
 - runtime behavior with `POST_NOTIFICATIONS` denied;
 - real connectivity callback timing, Wi-Fi/cellular/VPN transitions, or data charging;
 - a real HTTP model transfer, multi-gigabyte resume, checksum, or atomic promotion;

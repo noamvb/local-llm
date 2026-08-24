@@ -76,6 +76,10 @@ class TransferCallFenceTest {
 
         assertTrue(failure is TransferNetworkPolicyException)
         assertEquals(0, delegateCalls.get())
+        assertEquals(
+            TransferNetworkBlockReason.REQUIRES_UNMETERED_WIFI,
+            fence.terminalBlockReason(),
+        )
     }
 
     @Test

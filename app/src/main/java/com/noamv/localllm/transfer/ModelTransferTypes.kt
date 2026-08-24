@@ -145,6 +145,65 @@ internal enum class TransferStopReason {
     SERVICE_TIMEOUT,
 }
 
+internal enum class PromotionCommitState {
+    ACTIVE,
+    CANCELLED,
+    COMMITTING,
+    COMMITTED,
+    FAILED,
+}
+
+/**
+ * Arbitrates the only irreversible transfer step against cancellation.
+ *
+ * The short synchronized section decides who owns the outcome. File promotion then runs
+ * outside the lock so a platform timeout watchdog never waits on file I/O.
+ * Once promotion has claimed COMMITTING, cancellation cannot publish a contradictory
+ * CANCELLED terminal; the promotion path finishes as COMMITTED or FAILED instead.
+ */
+internal class PromotionCommitArbiter {
+    private val lock = Any()
+    private var current = PromotionCommitState.ACTIVE
+
+    fun cancel(): Boolean = synchronized(lock) {
+        when (current) {
+            PromotionCommitState.ACTIVE -> {
+                current = PromotionCommitState.CANCELLED
+                true
+            }
+            PromotionCommitState.CANCELLED -> true
+            PromotionCommitState.COMMITTING,
+            PromotionCommitState.COMMITTED,
+            PromotionCommitState.FAILED,
+            -> false
+        }
+    }
+
+    fun commit(promotion: () -> Unit): Boolean {
+        synchronized(lock) {
+            if (current != PromotionCommitState.ACTIVE) return false
+            current = PromotionCommitState.COMMITTING
+        }
+        try {
+            promotion()
+        } catch (error: Throwable) {
+            synchronized(lock) {
+                if (current == PromotionCommitState.COMMITTING) {
+                    current = PromotionCommitState.FAILED
+                }
+            }
+            throw error
+        }
+        synchronized(lock) {
+            check(current == PromotionCommitState.COMMITTING)
+            current = PromotionCommitState.COMMITTED
+        }
+        return true
+    }
+
+    fun state(): PromotionCommitState = synchronized(lock) { current }
+}
+
 internal enum class ModelTransferFailureCategory {
     NETWORK,
     STORAGE,
@@ -220,6 +279,56 @@ internal class ModelTransferStatusCoordinator(
             } ?: return
             _status.value = current.copy(
                 phase = phase,
+                bytes = TransferByteSnapshot.create(
+                    expectedBytes = current.descriptor.expectedBytes,
+                    partialBytesAtStart = current.bytes.partialBytesAtStart,
+                    availableBytes = availableBytes,
+                    transferredThisRunBytes = transferredThisRunBytes,
+                ),
+                blockReason = null,
+                stopReason = null,
+                failureCategory = null,
+            )
+        }
+    }
+
+    /** Refreshes byte truth for this exact run without changing its active/terminal phase. */
+    fun refreshStorageBytes(
+        sessionId: Long,
+        availableBytes: Long,
+        transferredThisRunBytes: Long,
+    ) {
+        synchronized(lock) {
+            val current = _status.value.takeIf {
+                it.sessionId == sessionId && it.phase != ModelTransferPhase.IDLE
+            } ?: return
+            _status.value = current.copy(
+                bytes = TransferByteSnapshot.create(
+                    expectedBytes = current.descriptor.expectedBytes,
+                    partialBytesAtStart = current.bytes.partialBytesAtStart,
+                    availableBytes = availableBytes,
+                    transferredThisRunBytes = transferredThisRunBytes,
+                ),
+            )
+        }
+    }
+
+    /**
+     * Records the irreversible promotion winner with exact storage bytes. This may replace
+     * an earlier same-session timeout/cancel/block callback because the shared commit
+     * arbiter proves that promotion claimed the outcome first.
+     */
+    fun completeCommittedPromotion(
+        sessionId: Long,
+        availableBytes: Long,
+        transferredThisRunBytes: Long,
+    ) {
+        synchronized(lock) {
+            val current = _status.value.takeIf {
+                it.sessionId == sessionId && it.phase != ModelTransferPhase.IDLE
+            } ?: return
+            _status.value = current.copy(
+                phase = ModelTransferPhase.COMPLETED,
                 bytes = TransferByteSnapshot.create(
                     expectedBytes = current.descriptor.expectedBytes,
                     partialBytesAtStart = current.bytes.partialBytesAtStart,
@@ -334,5 +443,10 @@ internal fun findTransferNetworkBlockReason(error: Throwable): TransferNetworkBl
     }
     return null
 }
+
+internal fun resolveTransferNetworkBlockReason(
+    error: Throwable,
+    leaseTerminalReason: TransferNetworkBlockReason?,
+): TransferNetworkBlockReason? = leaseTerminalReason ?: findTransferNetworkBlockReason(error)
 
 private const val MAX_FAILURE_CAUSE_DEPTH = 64

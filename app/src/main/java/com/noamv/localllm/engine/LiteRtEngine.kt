@@ -109,6 +109,7 @@ internal class LiteRtEngine internal constructor(
     override suspend fun acquirePreferredArtifact(
         transport: ModelAcquisitionTransport,
         onProgress: (ArtifactAcquisitionProgress) -> Unit,
+        onTerminalSnapshot: (ArtifactAcquisitionByteSnapshot) -> Unit,
     ) {
         acquisitionLock.withLock {
             val build = startupPolicy.ownerAcquisitionTarget() ?: return
@@ -126,6 +127,7 @@ internal class LiteRtEngine internal constructor(
                     build = build,
                     callFactory = transport.callFactory,
                     validateNetwork = transport.validateNetwork,
+                    commitPromotion = transport.commitPromotion,
                     onStage = { stage ->
                         onProgress(
                             ArtifactAcquisitionProgress(
@@ -147,6 +149,16 @@ internal class LiteRtEngine internal constructor(
                                 availableBytes = progress.actualBytes,
                                 totalBytes = progress.totalBytes,
                                 transferredThisRunBytes = progress.transferredThisRunBytes,
+                            ),
+                        )
+                    },
+                    onTerminalSnapshot = { snapshot ->
+                        onTerminalSnapshot(
+                            ArtifactAcquisitionByteSnapshot(
+                                build = build,
+                                availableBytes = snapshot.availableBytes,
+                                transferredThisRunBytes = snapshot.transferredThisRunBytes,
+                                promotionCommitted = snapshot.promotionCommitted,
                             ),
                         )
                     },

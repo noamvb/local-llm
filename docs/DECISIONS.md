@@ -23,6 +23,16 @@ network-free verification and promotion path. Cancellation, critical trim, polic
 service destruction, setup failure, and timeout all end in typed manager-only state and
 cannot promote incomplete data.
 
+Cancellation and verified atomic promotion share a per-session commit arbiter. If
+cancellation claims first, promotion cannot begin. If promotion claims first,
+cancellation cannot publish a contradictory terminal state; target existence/length
+validation is part of the commit, and the exact terminal storage snapshot records whether
+promotion committed. Ordinary cancellation retains service ownership until that snapshot
+settles. Platform `dataSync` timeout is the bounded exception: after requesting normal
+cancellation it forces the exact session out of foreground/started state after a two-second
+watchdog. Process-wide monotonic session IDs and ModelStore serialization fence late
+settlement from a recreated service.
+
 The transfer notification contains checked-in neutral labels, model role/name, exact
 expected/partial/cumulative-transferred/remaining bytes when known, verification/install
 stage, and an immutable explicit cancel action. Notification permission is not an admission
@@ -46,6 +56,10 @@ platform permits one uniform owner; it does not weaken the current explicit-star
 process death never resumes one. Denied `POST_NOTIFICATIONS` does not block the service;
 Android's foreground-service surface and the manager are the remaining controls. Installed
 known-good artifacts are never removed before replacement verification and promotion.
+Displayed cumulative transfer bytes count every successfully read HTTP response byte,
+including data later rejected or rolled back; terminal available/remaining bytes come from
+installed/partial storage after file ownership settles. Android 15 timeout grace and late
+disk reconciliation still require physical-device validation.
 Delete, repair, reload, signed manifests, multi-role storage, benchmark work, real model
 transfer, and physical-device validation remain outside this change.
 

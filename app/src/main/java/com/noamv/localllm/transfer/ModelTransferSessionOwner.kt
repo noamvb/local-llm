@@ -1,5 +1,7 @@
 package com.noamv.localllm.transfer
 
+import java.util.concurrent.atomic.AtomicLong
+
 internal data class ActiveTransferSession(
     val id: Long,
     val policy: TransferNetworkPolicy,
@@ -19,12 +21,11 @@ internal sealed interface TransferStartDecision {
  */
 internal class ModelTransferSessionOwner {
     private val lock = Any()
-    private var nextId = 0L
     private var active: ActiveTransferSession? = null
 
     fun start(policy: TransferNetworkPolicy): TransferStartDecision = synchronized(lock) {
         active?.let { return TransferStartDecision.Coalesced(it) }
-        val session = ActiveTransferSession(++nextId, policy)
+        val session = ActiveTransferSession(ProcessTransferSessionIds.next(), policy)
         active = session
         TransferStartDecision.Started(session)
     }
@@ -36,4 +37,11 @@ internal class ModelTransferSessionOwner {
         active = null
         true
     }
+}
+
+/** Service recreation shares one ID domain while old in-process callbacks can survive. */
+private object ProcessTransferSessionIds {
+    private val nextId = AtomicLong(0L)
+
+    fun next(): Long = nextId.incrementAndGet()
 }
