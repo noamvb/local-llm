@@ -170,7 +170,7 @@ internal class AssistantOrchestratorV2(
                 val legacyRequest = InsightRequest(
                     clientId = request.initiatingClient,
                     task = InsightTask.PERIOD_SUMMARY,
-                    subject = "personal assistant aggregate data",
+                    subject = writerPrompt,
                     period = Period(
                         label = query.period.toString(),
                         start = null,

@@ -91,7 +91,16 @@ internal class AssistantServiceV2Binder(
             callback = callback,
         )
 
-        inFlight[requestId] = record
+        val deathRecipient = IBinder.DeathRecipient {
+            inFlight.remove(requestId)
+            scheduler.cancel(requestId)
+        }
+        try {
+            callback.asBinder().linkToDeath(deathRecipient, 0)
+        } catch (_: RemoteException) {
+            // Binder died before link
+            return requestId
+        }
 
         scope.launch {
             try {
@@ -111,6 +120,7 @@ internal class AssistantServiceV2Binder(
                 callback.safeError(requestId, LocalLlmError.INTERNAL, error.message ?: "Unknown error", true)
             } finally {
                 inFlight.remove(requestId)
+                runCatching { callback.asBinder().unlinkToDeath(deathRecipient, 0) }
             }
         }
 
@@ -129,7 +139,7 @@ internal class AssistantServiceV2Binder(
     }
 
     override fun getHistoryPage(queryJson: String): String {
-        enforceCaller()
+        val callerPackage = enforceCaller()
 
         val query = try {
             AssistantContractV2.json.decodeFromString(HistoryQuery.serializer(), queryJson)
@@ -137,9 +147,8 @@ internal class AssistantServiceV2Binder(
             HistoryQuery()
         }
 
-        // Return history page filtered to the client or full based on permissions
         val page = kotlinx.coroutines.runBlocking {
-            historyRepository.getHistoryPage(query, clientFilter = null)
+            historyRepository.getHistoryPage(query, clientFilter = callerPackage)
         }
         return AssistantContractV2.json.encodeToString(HistoryPage.serializer(), page)
     }
