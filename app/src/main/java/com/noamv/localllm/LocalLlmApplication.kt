@@ -12,7 +12,10 @@ import com.noamv.localllm.engine.ModelAcquisitionTransport
 import com.noamv.localllm.engine.ModelAcquirer
 import com.noamv.localllm.engine.ProcessWorkEpoch
 import com.noamv.localllm.engine.shouldPrewarmOnBind
+import com.noamv.localllm.history.AssistantDatabase
+import com.noamv.localllm.history.AssistantHistoryRepository
 import com.noamv.localllm.model.ModelStore
+import com.noamv.localllm.privacy.AssistantAccessPolicy
 import com.noamv.localllm.transfer.ForegroundTransferCancellationRegistry
 import com.noamv.localllm.transfer.ModelRole
 import com.noamv.localllm.transfer.ModelTransferDescriptor
@@ -73,6 +76,18 @@ class LocalLlmApplication : Application() {
             .build()
 
     val modelStore: ModelStore by lazy { ModelStore(this, httpClient) }
+
+    val assistantDatabase: AssistantDatabase by lazy {
+        AssistantDatabase.getInstance(this)
+    }
+
+    val historyRepository: AssistantHistoryRepository by lazy {
+        AssistantHistoryRepository(assistantDatabase.historyDao())
+    }
+
+    val accessPolicy: AssistantAccessPolicy by lazy {
+        AssistantAccessPolicy(this)
+    }
 
     private val engineDelegate = lazy { LiteRtEngine(this, modelStore) }
     val engine: LlmEngine

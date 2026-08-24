@@ -2,6 +2,7 @@ plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.kotlin.compose)
   alias(libs.plugins.kotlin.serialization)
+  alias(libs.plugins.ksp)
 }
 
 // Release signing is supplied by CI environment variables so no keystore is ever committed.
@@ -30,6 +31,10 @@ android {
     versionName = "0.1.5"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+    ksp {
+      arg("room.schemaLocation", "$projectDir/schemas")
+    }
 
     ndk {
       // The only real target is an arm64 phone. Shipping a single ABI keeps the APK small
@@ -92,6 +97,9 @@ dependencies {
   implementation(libs.androidx.lifecycle.runtime.ktx)
   implementation(libs.androidx.lifecycle.viewmodel.compose)
   implementation(libs.androidx.navigation.compose)
+  implementation(libs.androidx.room.runtime)
+  implementation(libs.androidx.room.ktx)
+  ksp(libs.androidx.room.compiler)
   implementation(libs.androidx.work.runtime.ktx)
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
@@ -103,6 +111,7 @@ dependencies {
 
   testImplementation(libs.junit)
   testImplementation(libs.kotlinx.coroutines.test)
+  testImplementation(libs.androidx.room.testing)
   androidTestImplementation(platform(libs.androidx.compose.bom))
   androidTestImplementation(libs.androidx.junit)
   androidTestImplementation(libs.androidx.compose.ui.test.junit4)
