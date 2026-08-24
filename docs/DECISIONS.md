@@ -640,3 +640,25 @@ writer and an unreliable arithmetician, so any figure it derives is a figure tha
 wrong while sounding right. And binder caps all in-flight transactions for a process at
 roughly 1 MB, which a year of raw rows would breach. Both point the same way, so the
 constraint is built into the contract rather than left to callers' discretion.
+
+## 2026-08-23 — Assistant platform UX, residency, follow-ups, and daily insights
+
+**Decision.** The following architecture and interaction rules govern Stage 2 and 3:
+
+1. **Shared History Presentation:** Client Assistant tabs default to filtering the conversation
+   list by the initiating app, with an interactive toggle to view all shared conversations
+   across apps.
+2. **Model Memory Residency:** LocalLLM dynamically supports simultaneous `ROUTER` and `WRITER`
+   residency when the device has > 2.5 GB of free RAM headroom, gracefully falling back to
+   strict 1-role residency with 5-minute idle unload under memory pressure.
+3. **Follow-up Turns & Context:** Follow-up questions re-fetch fresh facts for mentioned entities/periods
+   and supply structured summaries of prior validated turns as conversational context to the writer.
+4. **Cross-App Authorization:** Cross-app queries execute if explicit in the prompt text or if
+   the composer toggle is selected; ambiguous prompts return clarification prompt chips.
+5. **Daily Automatic Insights:** Background generation is triggered via WorkManager immediately
+   after the first settled sync of each calendar day (requiring battery/charging constraints).
+6. **Failed Output Handling:** Unvalidated or failed generations are persisted in Room with
+   their specific failure reasons and displayed in UI collapsed behind a prominent warning banner
+   as inert escaped text (excluded from future context and notifications).
+7. **Model Manifest & Updates:** Manifest checks occur passively on Wi-Fi with an update badge
+   in Manager UI; downloads start only on explicit user tap.
