@@ -87,6 +87,7 @@
             android:permission="com.noamv.localllm.permission.INFERENCE">
             <intent-filter>
                 <action android:name="com.noamv.localllm.action.BIND_INFERENCE" />
+                <action android:name="com.noamv.localllm.v2.action.BIND_ASSISTANT" />
             </intent-filter>
         </service>
 

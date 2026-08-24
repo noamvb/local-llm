@@ -24,6 +24,9 @@ import com.noamv.localllm.engine.InferenceScheduler
 import com.noamv.localllm.engine.LlmEngine
 import com.noamv.localllm.security.CallerAuthorizer
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -41,10 +44,24 @@ class InferenceService : Service() {
     private var acceptingRequests = true
     private lateinit var callerAuthorizer: CallerAuthorizer
 
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
     private val engine: LlmEngine
         get() = (application as LocalLlmApplication).engine
     private val scheduler: InferenceScheduler
         get() = (application as LocalLlmApplication).inferenceScheduler
+
+    private val v2Binder by lazy {
+        val app = application as LocalLlmApplication
+        AssistantServiceV2Binder(
+            scope = serviceScope,
+            callerAuthorizer = callerAuthorizer,
+            accessPolicy = app.accessPolicy,
+            historyRepository = app.historyRepository,
+            orchestrator = app.assistantOrchestrator,
+            scheduler = scheduler,
+        )
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -54,7 +71,13 @@ class InferenceService : Service() {
 
     // Binding proves only that the manifest permission gate passed. Exact package-plus-signer
     // authorization happens on each Binder transaction, so a simple bind must stay inert.
-    override fun onBind(intent: Intent?): IBinder = binder
+    override fun onBind(intent: Intent?): IBinder {
+        return if (intent?.action == ACTION_BIND_ASSISTANT_V2) {
+            v2Binder
+        } else {
+            binder
+        }
+    }
 
     override fun onDestroy() {
         val toCancel = synchronized(serviceStateLock) {
@@ -398,6 +421,7 @@ class InferenceService : Service() {
     }
 
     companion object {
+        const val ACTION_BIND_ASSISTANT_V2 = "com.noamv.localllm.v2.action.BIND_ASSISTANT"
         private const val TAG = "InferenceService"
         private const val CHANNEL_ID = "engine"
         private const val STAGE_QUEUED = "queued"
