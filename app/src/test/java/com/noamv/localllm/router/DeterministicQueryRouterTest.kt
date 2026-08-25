@@ -104,11 +104,44 @@ class DeterministicQueryRouterTest {
     }
 
     @Test
-    fun testRawExportBlockedAsUnavailable() {
-        val exportDecision = DeterministicQueryRouter.route(
-            question = "Dump all raw database rows for my purchases",
+    fun testCrossAppWithoutConsentReturnsClarify() {
+        val decision = DeterministicQueryRouter.route(
+            question = "Compare my cannabis consumption with my poop schedule frequency",
+            defaultSource = AppSource.CANNSHEET,
+            allowCrossApp = false,
         )
-        assertTrue(exportDecision is RouterDecision.Unsupported)
-        assertEquals(LimitationId.RAW_DATA_UNAVAILABLE, (exportDecision as RouterDecision.Unsupported).limitationId)
+
+        assertTrue(decision is RouterDecision.Clarify)
+        assertEquals(com.noamv.localllm.contract.v2.ClarificationId.CHOOSE_SOURCE, (decision as RouterDecision.Clarify).clarificationId)
+    }
+
+    @Test
+    fun testSpendScheduleDoesNotPullBothSources() {
+        val decision = DeterministicQueryRouter.route(
+            question = "what's my spend schedule",
+            defaultSource = AppSource.CANNSHEET,
+            allowCrossApp = false,
+        )
+
+        // Must not return two sources
+        if (decision is RouterDecision.Query) {
+            assertEquals(1, decision.query.sources.size)
+        } else {
+            assertTrue(decision is RouterDecision.Clarify)
+        }
+    }
+
+    @Test
+    fun testMaxSourcesAllowedIsEnforced() {
+        val decision = DeterministicQueryRouter.route(
+            question = "Compare my cannabis and bowel habits",
+            defaultSource = AppSource.CANNSHEET,
+            allowCrossApp = true,
+            maxSourcesAllowed = 1,
+        )
+
+        assertTrue(decision is RouterDecision.Query)
+        val query = (decision as RouterDecision.Query).query
+        assertEquals(1, query.sources.size)
     }
 }

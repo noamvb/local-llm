@@ -301,6 +301,17 @@ class AssistantOrchestratorV2Test {
 
     @Test
     fun testBuildWriterPromptIncludesPriorTurnsContext() {
+        val priorFact = FactEvidence(
+            factId = "f1",
+            sourceApp = AppSource.CANNSHEET,
+            sourceContractVersion = 2,
+            metricId = "cannsheet.count",
+            displayLabel = "Sessions",
+            displayValue = "10",
+            timezone = "UTC",
+            asOfTime = 1000L,
+            sourceRevision = "rev-1",
+        )
         val priorTurns = listOf(
             HistoryTurnRecord(
                 historyId = 1L,
@@ -310,7 +321,7 @@ class AssistantOrchestratorV2Test {
                 status = AssistantTerminalStatus.VALIDATED,
                 resultText = "You had 10 sessions.",
                 citations = emptyList(),
-                citedFacts = emptyList(),
+                citedFacts = listOf(priorFact),
                 sources = listOf(AppSource.CANNSHEET),
                 period = null,
                 asOfTime = 1000L,
@@ -333,12 +344,175 @@ class AssistantOrchestratorV2Test {
                 ),
             ),
             priorTurns = priorTurns,
+            warnings = listOf("Warning: partial records"),
         )
 
         assertTrue(prompt.contains("Previous Conversation Context"))
         assertTrue(prompt.contains("How many times did I smoke?"))
-        assertTrue(prompt.contains("You had 10 sessions."))
+        assertTrue(prompt.contains("Prior verified facts cited"))
+        assertTrue(prompt.contains("Sessions: 10"))
+        assertTrue(prompt.contains("Data Source Warnings"))
+        assertTrue(prompt.contains("Warning: partial records"))
         assertTrue(prompt.contains("Current Question: And what was my spend?"))
+    }
+
+    @Test
+    fun testOverlongOutputFailsValidation() = runTest {
+        val longEngine = FakeOrchestratorEngine("Word ".repeat(500))
+        val orchestrator = AssistantOrchestratorV2(
+            engine = longEngine,
+            historyRepository = historyRepository,
+            accessPolicy = accessPolicy,
+            residencyCoordinator = residencyCoordinator,
+            factProviderQuery = { _, _ ->
+                ProviderFactsResult(
+                    sourceApp = AppSource.CANNSHEET,
+                    facts = listOf(
+                        FactEvidence(
+                            factId = "f1",
+                            sourceApp = AppSource.CANNSHEET,
+                            sourceContractVersion = 2,
+                            metricId = "cannsheet.spend",
+                            displayLabel = "Spend",
+                            displayValue = "$50",
+                            timezone = "UTC",
+                            asOfTime = 1000L,
+                            sourceRevision = "rev-1",
+                        ),
+                    ),
+                    revision = "r1",
+                    asOfTime = 1000L,
+                    timezone = "UTC",
+                )
+            },
+        )
+
+        val request = AssistantTurnRequest(
+            requestId = "req-long",
+            threadId = "thread-long",
+            initiatingClient = "com.example.cannsheet",
+            question = "How much did I spend?",
+            defaultSource = AppSource.CANNSHEET,
+        )
+
+        val result = orchestrator.executeTurn(request) {}
+        assertEquals(AssistantTerminalStatus.FAILED_VALIDATION, result.status)
+        assertTrue(result.validationIssues.any { it.contains("length") || it.contains("violated") })
+    }
+
+    @Test
+    fun testProviderWarningsCollectedIntoLimitations() = runTest {
+        val orchestrator = AssistantOrchestratorV2(
+            engine = fakeEngine,
+            historyRepository = historyRepository,
+            accessPolicy = accessPolicy,
+            residencyCoordinator = residencyCoordinator,
+            factProviderQuery = { _, _ ->
+                ProviderFactsResult(
+                    sourceApp = AppSource.CANNSHEET,
+                    facts = listOf(
+                        FactEvidence(
+                            factId = "f1",
+                            sourceApp = AppSource.CANNSHEET,
+                            sourceContractVersion = 2,
+                            metricId = "cannsheet.recorded_spend",
+                            displayLabel = "Spend",
+                            displayValue = "$120.50",
+                            timezone = "UTC",
+                            asOfTime = 1000L,
+                            sourceRevision = "rev-1",
+                        ),
+                        FactEvidence(
+                            factId = "f2",
+                            sourceApp = AppSource.CANNSHEET,
+                            sourceContractVersion = 2,
+                            metricId = "cannsheet.purchase_count",
+                            displayLabel = "Purchases",
+                            displayValue = "12",
+                            timezone = "UTC",
+                            asOfTime = 1000L,
+                            sourceRevision = "rev-1",
+                        ),
+                    ),
+                    revision = "r1",
+                    asOfTime = 1000L,
+                    timezone = "UTC",
+                    warnings = listOf("Poop Schedule provider timed out"),
+                )
+            },
+        )
+
+        val request = AssistantTurnRequest(
+            requestId = "req-warn",
+            threadId = "thread-warn",
+            initiatingClient = "com.example.cannsheet",
+            question = "How much did I spend?",
+            defaultSource = AppSource.CANNSHEET,
+        )
+
+        val result = orchestrator.executeTurn(request) {}
+        assertTrue(result.limitations.contains("Poop Schedule provider timed out"))
+    }
+
+    @Test
+    fun testPersistedCitedFactsContainsOnlyCitedFacts() = runTest {
+        // Engine only mentions Spend ($120.50), not purchases
+        val spendOnlyEngine = FakeOrchestratorEngine("You spent $120.50 this month.")
+        val orchestrator = AssistantOrchestratorV2(
+            engine = spendOnlyEngine,
+            historyRepository = historyRepository,
+            accessPolicy = accessPolicy,
+            residencyCoordinator = residencyCoordinator,
+            factProviderQuery = { _, _ ->
+                ProviderFactsResult(
+                    sourceApp = AppSource.CANNSHEET,
+                    facts = listOf(
+                        FactEvidence(
+                            factId = "f1",
+                            sourceApp = AppSource.CANNSHEET,
+                            sourceContractVersion = 2,
+                            metricId = "cannsheet.recorded_spend",
+                            displayLabel = "Spend",
+                            displayValue = "$120.50",
+                            timezone = "UTC",
+                            asOfTime = 1000L,
+                            sourceRevision = "rev-1",
+                        ),
+                        FactEvidence(
+                            factId = "f2",
+                            sourceApp = AppSource.CANNSHEET,
+                            sourceContractVersion = 2,
+                            metricId = "cannsheet.purchase_count",
+                            displayLabel = "Purchases",
+                            displayValue = "12",
+                            timezone = "UTC",
+                            asOfTime = 1000L,
+                            sourceRevision = "rev-1",
+                        ),
+                    ),
+                    revision = "r1",
+                    asOfTime = 1000L,
+                    timezone = "UTC",
+                )
+            },
+        )
+
+        val request = AssistantTurnRequest(
+            requestId = "req-cited-filter",
+            threadId = "thread-cited-filter",
+            initiatingClient = "com.example.cannsheet",
+            question = "How much did I spend?",
+            defaultSource = AppSource.CANNSHEET,
+        )
+
+        val result = orchestrator.executeTurn(request) {}
+        assertEquals(AssistantTerminalStatus.VALIDATED, result.status)
+
+        val page = historyRepository.getHistoryPage(HistoryQuery(threadId = "thread-cited-filter"))
+        assertEquals(1, page.turns.size)
+        val turn = page.turns[0]
+        assertEquals(1, turn.citedFacts.size)
+        assertEquals("f1", turn.citedFacts[0].factId)
     }
 
     @Test

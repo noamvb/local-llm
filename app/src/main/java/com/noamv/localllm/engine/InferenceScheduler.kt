@@ -50,6 +50,7 @@ class InferenceScheduler(
     private val scope: CoroutineScope,
     private val maxWaiting: Int = DEFAULT_MAX_WAITING,
     private val maxQueueWaitMillis: Long = DEFAULT_MAX_QUEUE_WAIT_MILLIS,
+    private val onActivityFinished: () -> Unit = {},
 ) : AutoCloseable {
     init {
         require(maxWaiting >= 0) { "maxWaiting must not be negative" }
@@ -255,6 +256,7 @@ class InferenceScheduler(
         }
 
         terminalState?.let(entry::notifyTerminal)
+        onActivityFinished()
         next?.let { promoted ->
             promoted.notifyState(InferenceQueueState.ACTIVE)
             promoted.work.start()

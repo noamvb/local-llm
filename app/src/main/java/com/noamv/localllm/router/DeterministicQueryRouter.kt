@@ -60,6 +60,7 @@ object DeterministicQueryRouter {
         question: String,
         defaultSource: AppSource = AppSource.CANNSHEET,
         allowCrossApp: Boolean = false,
+        maxSourcesAllowed: Int = if (allowCrossApp) 2 else 1,
     ): RouterDecision {
         val trimmed = question.trim()
         val lower = trimmed.lowercase(Locale.ROOT)
@@ -83,22 +84,27 @@ object DeterministicQueryRouter {
 
         // 2. Determine Sources
         val mentionsCannabis = lower.contains("cannabis") || lower.contains("weed") ||
-            lower.contains("flower") || lower.contains("cart") || lower.contains("spend") ||
-            lower.contains("strain") || lower.contains("thc") || lower.contains("cannsheet")
+            lower.contains("flower") || lower.contains("cart") ||
+            lower.contains("strain") || lower.contains("thc") || lower.contains("cannsheet") ||
+            lower.contains("dispensary") || lower.contains("pot")
         val mentionsDigestive = lower.contains("poop") || lower.contains("bowel") ||
             lower.contains("stool") || lower.contains("bristol") || lower.contains("digestive") ||
-            lower.contains("schedule")
+            lower.contains("defecat")
 
         val sources = mutableListOf<AppSource>()
         if (mentionsCannabis && mentionsDigestive) {
-            sources.add(AppSource.CANNSHEET)
-            sources.add(AppSource.POOP_SCHEDULE)
+            if (allowCrossApp) {
+                sources.add(AppSource.CANNSHEET)
+                sources.add(AppSource.POOP_SCHEDULE)
+            } else {
+                return RouterDecision.Clarify(ClarificationId.CHOOSE_SOURCE)
+            }
         } else if (mentionsCannabis) {
             sources.add(AppSource.CANNSHEET)
-            if (allowCrossApp) sources.add(AppSource.POOP_SCHEDULE)
+            if (allowCrossApp && maxSourcesAllowed > 1) sources.add(AppSource.POOP_SCHEDULE)
         } else if (mentionsDigestive) {
             sources.add(AppSource.POOP_SCHEDULE)
-            if (allowCrossApp) sources.add(AppSource.CANNSHEET)
+            if (allowCrossApp && maxSourcesAllowed > 1) sources.add(AppSource.CANNSHEET)
         } else {
             sources.add(defaultSource)
         }
@@ -163,7 +169,7 @@ object DeterministicQueryRouter {
         // 7. Metrics
         val metrics = mutableListOf<MetricId>()
         if (sources.contains(AppSource.CANNSHEET)) {
-            if (lower.contains("spend") || lower.contains("cost") || lower.contains("dollar") || lower.contains("price") || lower.contains("paid")) {
+            if (Regex("\\bspend\\b").containsMatchIn(lower) || lower.contains("spent") || lower.contains("spending") || lower.contains("cost") || lower.contains("dollar") || lower.contains("price") || lower.contains("paid")) {
                 metrics.add(MetricId.CANNSHEET_RECORDED_SPEND)
                 metrics.add(MetricId.CANNSHEET_RECORDED_SPEND_COVERAGE)
                 metrics.add(MetricId.CANNSHEET_PURCHASE_COUNT)
@@ -234,7 +240,7 @@ object DeterministicQueryRouter {
 
         val aggregateQuery = AggregateQuery(
             grammarVersion = AssistantContractV2.GRAMMAR_VERSION,
-            sources = sources.distinct().take(2),
+            sources = sources.distinct().take(maxSourcesAllowed.coerceIn(1, 2)),
             metrics = finalMetrics,
             period = period,
             comparison = comparison,

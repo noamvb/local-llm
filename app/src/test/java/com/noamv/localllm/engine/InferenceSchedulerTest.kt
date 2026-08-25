@@ -316,6 +316,20 @@ class InferenceSchedulerTest {
         )
     }
 
+    @Test
+    fun `onActivityFinished callback is invoked when inference completes`() = runTest {
+        var callbackCount = 0
+        val scheduler = InferenceScheduler(
+            scope = this,
+            onActivityFinished = { callbackCount++ },
+        )
+
+        scheduler.submit("work-1", InferencePriority.OPEN_SCREEN) {}
+        advanceUntilIdle()
+
+        assertEquals(1, callbackCount)
+    }
+
     private fun assertAccepted(admission: InferenceAdmission) {
         assertTrue("Expected accepted admission, got $admission", admission is InferenceAdmission.Accepted)
     }

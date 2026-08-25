@@ -41,15 +41,31 @@ import com.noamv.localllm.contract.EngineState
  * in, and lets the owner manage privacy controls, history, downloads, and self-tests.
  */
 class MainActivity : ComponentActivity() {
+    private val notificationPermissionLauncher = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+    ) { /* Permission result handled gracefully; transfer works regardless of grant */ }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         // Android 15+ draws apps edge to edge, so insets must be handled explicitly
         // or the heading sits underneath the status bar.
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
+
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    ManagerScreen(viewModel = viewModel(factory = ManagerViewModel.Factory))
+                    ManagerScreen(
+                        viewModel = viewModel(factory = ManagerViewModel.Factory),
+                        onRequestNotificationPermission = {
+                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                                notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                            }
+                        },
+                    )
                 }
             }
         }
@@ -57,7 +73,10 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun ManagerScreen(viewModel: ManagerViewModel) {
+private fun ManagerScreen(
+    viewModel: ManagerViewModel,
+    onRequestNotificationPermission: () -> Unit = {},
+) {
     val status by viewModel.status.collectAsStateWithLifecycle()
     val timings by viewModel.timings.collectAsStateWithLifecycle()
     val selfTest by viewModel.selfTest.collectAsStateWithLifecycle()
@@ -123,14 +142,20 @@ private fun ManagerScreen(viewModel: ManagerViewModel) {
         }
 
         Button(
-            onClick = viewModel::prepare,
+            onClick = {
+                onRequestNotificationPermission()
+                viewModel.prepare()
+            },
             enabled = !transfer.isActive && !status.modelDownloaded,
         ) {
             Text("Download on unmetered Wi-Fi")
         }
 
         OutlinedButton(
-            onClick = { confirmMetered = true },
+            onClick = {
+                onRequestNotificationPermission()
+                confirmMetered = true
+            },
             enabled = !transfer.isActive && !status.modelDownloaded,
         ) {
             Text("Use mobile or metered network once")

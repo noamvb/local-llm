@@ -51,11 +51,16 @@ internal class AssistantOrchestratorV2(
 
         // 2. Routing
         onEvent(AssistantEvent(AssistantEventType.ROUTING, stage = "Determining query intent"))
-        val decision = DeterministicQueryRouter.route(
-            question = request.question,
-            defaultSource = request.defaultSource,
-            allowCrossApp = request.allowCrossApp,
-        )
+        val decision = if (request.fixedQuery != null) {
+            RouterDecision.Query(request.fixedQuery)
+        } else {
+            DeterministicQueryRouter.route(
+                question = request.question,
+                defaultSource = request.defaultSource,
+                allowCrossApp = request.allowCrossApp,
+                maxSourcesAllowed = request.maxSourcesAllowed,
+            )
+        }
 
         return when (decision) {
             is RouterDecision.Clarify -> {
@@ -122,14 +127,16 @@ internal class AssistantOrchestratorV2(
                 )
 
                 val allFacts = mutableListOf<FactEvidence>()
+                val allWarnings = mutableListOf<String>()
                 var latestAsOfTime = System.currentTimeMillis()
 
                 for (source in query.sources) {
                     if (accessPolicy.isSourceQueryAllowed(source.name)) {
                         val providerResult = factProviderQuery(source, query)
                         allFacts.addAll(providerResult.facts)
+                        allWarnings.addAll(providerResult.warnings)
                         if (providerResult.asOfTime > 0) {
-                            latestAsOfTime = providerResult.asOfTime
+                            latestAsOfTime = maxOf(latestAsOfTime, providerResult.asOfTime)
                         }
                     }
                 }
@@ -139,6 +146,7 @@ internal class AssistantOrchestratorV2(
                     val noFactsResult = AssistantTerminalResult(
                         status = AssistantTerminalStatus.PARTIAL_SOURCE,
                         finalOrEscapedText = "No data records found for the requested period.",
+                        limitations = allWarnings.distinct(),
                     )
                     val historyId = historyRepository.recordTurn(
                         threadId = request.threadId,
@@ -161,9 +169,13 @@ internal class AssistantOrchestratorV2(
 
                 // Build Prompt & Warm Model
                 onEvent(AssistantEvent(AssistantEventType.MODEL_LOADING, stage = "Warming model"))
+                val currentRoles = if (engine.status.value.modelDownloaded) setOf(com.noamv.localllm.transfer.ModelRole.WRITER) else emptySet()
+                if (residencyCoordinator.shouldUnloadOtherRoles(com.noamv.localllm.transfer.ModelRole.WRITER, currentRoles)) {
+                    engine.unload()
+                }
                 engine.prepare { _, _ -> }
 
-                val writerPrompt = buildWriterPrompt(request.question, allFacts, priorTurns)
+                val writerPrompt = buildWriterPrompt(request.question, allFacts, priorTurns, allWarnings)
 
                 // Generate and stream drafts
                 val rawOutput = StringBuilder()
@@ -198,11 +210,55 @@ internal class AssistantOrchestratorV2(
 
                 val generatedText = rawOutput.toString().trim()
 
+                // Validate output length limits without throwing
+                val lengthValidatedText = try {
+                    GenerationOutputPolicy.validatedTerminalText(legacyRequest, generatedText)
+                } catch (_: Throwable) {
+                    null
+                }
+
+                if (lengthValidatedText == null) {
+                    val overlongResult = AssistantTerminalResult(
+                        status = AssistantTerminalStatus.FAILED_VALIDATION,
+                        finalOrEscapedText = SentenceCitationValidator.escapeForSafety(generatedText),
+                        validationIssues = listOf("Generated output violated terminal length policy"),
+                        limitations = allWarnings.distinct(),
+                    )
+                    val historyId = historyRepository.recordTurn(
+                        threadId = request.threadId,
+                        turnId = request.requestId,
+                        initiatingClient = request.initiatingClient,
+                        question = request.question,
+                        result = overlongResult,
+                        citedFacts = emptyList(),
+                        sources = query.sources,
+                        period = query.period.toString(),
+                        asOfTime = latestAsOfTime,
+                        modelVersion = "gemma-4-E2B-it",
+                    )
+                    onEvent(AssistantEvent(AssistantEventType.FAILURE, stage = "Terminal length limit exceeded"))
+                    return overlongResult.copy(historyId = historyId)
+                }
+
                 // Validate citations and groundedness
                 val validationResult = SentenceCitationValidator.validate(
-                    generatedText = generatedText,
+                    generatedText = lengthValidatedText,
                     facts = allFacts,
-                )
+                ).let { res ->
+                    if (allWarnings.isNotEmpty()) {
+                        res.copy(limitations = (res.limitations + allWarnings).distinct())
+                    } else {
+                        res
+                    }
+                }
+
+                // Filter cited facts to only those cited in the validated output
+                val citedFactIdSet = validationResult.citations.flatMap { it.citedFactIds }.toSet()
+                val persistedCitedFacts = if (validationResult.status == AssistantTerminalStatus.VALIDATED) {
+                    allFacts.filter { it.factId in citedFactIdSet }
+                } else {
+                    emptyList()
+                }
 
                 // Record turn in history repository atomically
                 val historyId = historyRepository.recordTurn(
@@ -211,7 +267,7 @@ internal class AssistantOrchestratorV2(
                     initiatingClient = request.initiatingClient,
                     question = request.question,
                     result = validationResult,
-                    citedFacts = allFacts,
+                    citedFacts = persistedCitedFacts,
                     sources = query.sources,
                     period = query.period.toString(),
                     asOfTime = latestAsOfTime,
@@ -229,14 +285,24 @@ internal class AssistantOrchestratorV2(
             question: String,
             facts: List<FactEvidence>,
             priorTurns: List<com.noamv.localllm.contract.v2.HistoryTurnRecord>,
+            warnings: List<String> = emptyList(),
         ): String {
             val sb = StringBuilder()
             if (priorTurns.isNotEmpty()) {
                 sb.append("Previous Conversation Context:\n")
                 priorTurns.takeLast(3).forEach { turn ->
                     sb.append("User: ").append(turn.question).append("\n")
-                    sb.append("Assistant: ").append(turn.resultText).append("\n")
+                    if (turn.citedFacts.isNotEmpty()) {
+                        sb.append("Prior verified facts cited: ")
+                            .append(turn.citedFacts.joinToString(", ") { "${it.displayLabel}: ${it.displayValue}" })
+                            .append("\n")
+                    }
                 }
+                sb.append("\n")
+            }
+            if (warnings.isNotEmpty()) {
+                sb.append("Data Source Warnings:\n")
+                warnings.forEach { sb.append("- ").append(it).append("\n") }
                 sb.append("\n")
             }
             sb.append("Current Question: ").append(question).append("\n\n")

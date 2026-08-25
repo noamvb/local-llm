@@ -94,12 +94,15 @@ class AssistantHistoryRepository(
         val limit = query.limit.coerceIn(1, 100)
 
         if (query.threadId != null) {
+            val thread = dao.getThreadById(query.threadId) ?: return HistoryPage(emptyList(), emptyList(), null, false)
+            if (clientFilter != null && thread.initiatingClient != clientFilter) {
+                return HistoryPage(emptyList(), emptyList(), null, false)
+            }
             val turns = dao.getTurnsForThread(query.threadId)
             val turnRecords = turns.map { it.toTurnRecord() }
-            val thread = dao.getThreadById(query.threadId)
-            val threadSummary = thread?.toThreadSummary()
+            val threadSummary = thread.toThreadSummary()
             return HistoryPage(
-                threads = listOfNotNull(threadSummary),
+                threads = listOf(threadSummary),
                 turns = turnRecords,
                 nextCursor = null,
                 hasMore = false,
@@ -136,6 +139,9 @@ class AssistantHistoryRepository(
         dao.deleteThread(threadId) > 0
 
     suspend fun clearAllHistory(): Int =
+        dao.clearAllHistory()
+
+    suspend fun clearAllInteractiveHistory(): Int =
         dao.clearAllInteractiveHistory()
 
     companion object {

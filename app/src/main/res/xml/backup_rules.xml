@@ -7,4 +7,5 @@
 <full-backup-content>
     <exclude domain="file" path="models/" />
     <exclude domain="external" path="models/" />
+    <exclude domain="database" path="." />
 </full-backup-content>

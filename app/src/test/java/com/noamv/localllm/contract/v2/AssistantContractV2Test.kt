@@ -61,6 +61,22 @@ class AssistantContractV2Test {
     }
 
     @Test
+    fun testQueryFilterLeadingZeroStringRoundtrip() {
+        val filter = QueryFilter(
+            source = AppSource.CANNSHEET,
+            field = "cannsheet.product_code",
+            operator = "EQUALS",
+            value = "007",
+        )
+
+        val jsonString = AssistantContractV2.json.encodeToString(QueryFilter.serializer(), filter)
+        val decoded = AssistantContractV2.json.decodeFromString(QueryFilter.serializer(), jsonString)
+
+        assertEquals("007", decoded.value)
+        assertEquals(filter, decoded)
+    }
+
+    @Test
     fun testAggregateQueryExplicitDatesAndBristolFilter() {
         val query = AggregateQuery(
             grammarVersion = 1,
