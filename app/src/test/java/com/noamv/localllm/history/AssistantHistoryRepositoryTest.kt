@@ -247,6 +247,87 @@ class AssistantHistoryRepositoryTest {
     }
 
     @Test
+    fun testGetHistoryPageWithThreadIdEnforcesClientFilter() = runTest {
+        val result = AssistantTerminalResult(
+            status = AssistantTerminalStatus.VALIDATED,
+            finalOrEscapedText = "Summary text",
+        )
+
+        repository.recordTurn(
+            threadId = "client-b-thread",
+            turnId = "turn-b-1",
+            initiatingClient = "com.example.cannsheet",
+            question = "Cannsheet spend?",
+            result = result,
+            citedFacts = emptyList(),
+            sources = listOf(AppSource.CANNSHEET),
+            period = "LAST_30_DAYS",
+            asOfTime = 5000L,
+            modelVersion = "gemma-4-E2B-it",
+        )
+
+        // Client A (poopschedule) queries Client B's threadId -> must return empty
+        val pageCross = repository.getHistoryPage(
+            query = HistoryQuery(threadId = "client-b-thread"),
+            clientFilter = "com.example.poopschedule",
+        )
+        assertEquals(0, pageCross.threads.size)
+        assertEquals(0, pageCross.turns.size)
+
+        // Client B (cannsheet) queries its own threadId -> must succeed
+        val pageOwn = repository.getHistoryPage(
+            query = HistoryQuery(threadId = "client-b-thread"),
+            clientFilter = "com.example.cannsheet",
+        )
+        assertEquals(1, pageOwn.threads.size)
+        assertEquals(1, pageOwn.turns.size)
+    }
+
+    @Test
+    fun testClearAllHistoryDeletesAllThreadsAndTurns() = runTest {
+        val result = AssistantTerminalResult(
+            status = AssistantTerminalStatus.VALIDATED,
+            finalOrEscapedText = "Summary text",
+        )
+
+        // Record interactive turn
+        repository.recordTurn(
+            threadId = "interactive-thread",
+            turnId = "turn-interactive-1",
+            initiatingClient = "com.example.cannsheet",
+            question = "Interactive Q",
+            result = result,
+            citedFacts = emptyList(),
+            sources = listOf(AppSource.CANNSHEET),
+            period = null,
+            asOfTime = 1000L,
+            modelVersion = "gemma-4-E2B-it",
+            isAutomaticFeed = false,
+        )
+
+        // Record automatic feed turn
+        repository.recordTurn(
+            threadId = "daily_highlight_2026-08-25",
+            turnId = "turn-auto-1",
+            initiatingClient = "com.example.cannsheet",
+            question = "Daily highlight",
+            result = result,
+            citedFacts = emptyList(),
+            sources = listOf(AppSource.CANNSHEET),
+            period = null,
+            asOfTime = 2000L,
+            modelVersion = "gemma-4-E2B-it",
+            isAutomaticFeed = true,
+        )
+
+        val cleared = repository.clearAllHistory()
+        assertEquals(2, cleared)
+        val allPage = repository.getHistoryPage(HistoryQuery(limit = 10), clientFilter = null)
+        assertEquals(0, allPage.threads.size)
+        assertEquals(0, allPage.turns.size)
+    }
+
+    @Test
     fun testDeriveThreadTitleSanitization() {
         assertEquals("Short question", AssistantHistoryRepository.deriveThreadTitle("Short question"))
         assertEquals("Question with extra spaces", AssistantHistoryRepository.deriveThreadTitle("   Question   with    extra    spaces   "))

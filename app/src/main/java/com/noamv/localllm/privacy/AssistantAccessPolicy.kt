@@ -51,10 +51,18 @@ class AssistantAccessPolicy(
         val master = masterEnabled.first()
         if (!master) return false
 
-        return when {
-            packageName.startsWith("com.example.cannsheet") || packageName.contains("cannsheet") -> cannsheetEnabled.first()
-            packageName.startsWith("com.noamv.poopschedule") || packageName.contains("poop") -> poopScheduleEnabled.first()
-            else -> true
+        return when (packageName) {
+            "com.noamv.cannsheet.mobile",
+            "com.noamv.cannsheet.mobile.sandbox",
+            "com.example.cannsheet",
+            "com.example" -> cannsheetEnabled.first()
+
+            "com.noamv.poopschedule",
+            "com.noamv.poopschedule.sandbox",
+            "com.noamv.poopschedule.debug",
+            "com.example.poopschedule" -> poopScheduleEnabled.first()
+
+            else -> false
         }
     }
 
@@ -65,7 +73,7 @@ class AssistantAccessPolicy(
         return when (sourceApp.uppercase()) {
             "CANNSHEET" -> cannsheetEnabled.first()
             "POOP_SCHEDULE" -> poopScheduleEnabled.first()
-            else -> true
+            else -> false
         }
     }
 

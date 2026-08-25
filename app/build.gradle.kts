@@ -27,8 +27,8 @@ android {
     // knownSigner permission flag used to gate the inference service requires API 31.
     minSdk = 31
     targetSdk = 36
-    versionCode = 8
-    versionName = "0.2.1"
+    versionCode = 9
+    versionName = "0.2.2"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -41,6 +41,10 @@ android {
       // because the LiteRT-LM native libraries dominate its size.
       abiFilters += "arm64-v8a"
     }
+  }
+
+  testOptions {
+    unitTests.isReturnDefaultValues = true
   }
 
   signingConfigs {

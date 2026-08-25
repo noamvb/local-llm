@@ -33,6 +33,7 @@ internal class AssistantServiceV2Binder(
     private val historyRepository: AssistantHistoryRepository,
     private val orchestrator: AssistantOrchestratorV2,
     private val scheduler: InferenceScheduler,
+    private val getCallingUid: () -> Int = { Binder.getCallingUid() },
 ) : IAssistantServiceV2.Stub() {
 
     constructor(
@@ -49,6 +50,7 @@ internal class AssistantServiceV2Binder(
         historyRepository = historyRepository,
         orchestrator = orchestrator,
         scheduler = scheduler,
+        getCallingUid = { Binder.getCallingUid() },
     )
 
     private val inFlight = ConcurrentHashMap<String, InFlightV2Turn>()
@@ -75,6 +77,7 @@ internal class AssistantServiceV2Binder(
 
     override fun startTurn(requestJson: String, callback: IAssistantCallbackV2): String {
         val callerPackage = enforceCaller()
+        val callerUid = getCallingUid()
 
         val request = try {
             AssistantContractV2.json.decodeFromString(AssistantTurnRequest.serializer(), requestJson)
@@ -85,11 +88,22 @@ internal class AssistantServiceV2Binder(
         }
 
         val requestId = request.requestId.ifBlank { UUID.randomUUID().toString() }
+
+        val isAccessAllowed = kotlinx.coroutines.runBlocking {
+            accessPolicy.isClientAccessAllowed(callerPackage)
+        }
+        if (!isAccessAllowed) {
+            callback.safeError(requestId, LocalLlmError.INVALID_REQUEST, "Client access is disabled by access policy", false)
+            return requestId
+        }
+
         val record = InFlightV2Turn(
             requestId = requestId,
-            callerUid = Binder.getCallingUid(),
+            callerUid = callerUid,
             callback = callback,
         )
+
+        check(inFlight.putIfAbsent(requestId, record) == null) { "duplicate requestId $requestId" }
 
         val deathRecipient = IBinder.DeathRecipient {
             inFlight.remove(requestId)
@@ -98,11 +112,19 @@ internal class AssistantServiceV2Binder(
         try {
             callback.asBinder().linkToDeath(deathRecipient, 0)
         } catch (_: RemoteException) {
-            // Binder died before link
+            inFlight.remove(requestId)
             return requestId
+        } catch (_: Throwable) {
+            // Environment where mock binder does not implement linkToDeath
         }
 
-        scope.launch {
+        val admission = scheduler.submit(
+            requestId = requestId,
+            priority = InferencePriority.LIVE_ASSISTANT,
+            onState = { state ->
+                // Map queue state if needed
+            },
+        ) {
             try {
                 val result = orchestrator.executeTurn(
                     request = request.copy(initiatingClient = callerPackage),
@@ -115,6 +137,7 @@ internal class AssistantServiceV2Binder(
                 callback.safeComplete(requestId, resultJson)
             } catch (cancelled: CancellationException) {
                 callback.safeError(requestId, LocalLlmError.CANCELLED, "Turn cancelled", false)
+                throw cancelled
             } catch (error: Throwable) {
                 Log.e(TAG, "Assistant turn failed", error)
                 callback.safeError(requestId, LocalLlmError.INTERNAL, error.message ?: "Unknown error", true)
@@ -124,11 +147,25 @@ internal class AssistantServiceV2Binder(
             }
         }
 
+        when (admission) {
+            is com.noamv.localllm.engine.InferenceAdmission.Accepted -> Unit
+            com.noamv.localllm.engine.InferenceAdmission.Busy -> {
+                inFlight.remove(requestId)
+                runCatching { callback.asBinder().unlinkToDeath(deathRecipient, 0) }
+                callback.safeError(requestId, LocalLlmError.BUSY, "Inference is busy: queue full. Retry later.", true)
+            }
+            com.noamv.localllm.engine.InferenceAdmission.Closed -> {
+                inFlight.remove(requestId)
+                runCatching { callback.asBinder().unlinkToDeath(deathRecipient, 0) }
+                callback.safeError(requestId, LocalLlmError.BUSY, "Inference is shutting down. Retry later.", true)
+            }
+        }
+
         return requestId
     }
 
     override fun cancelTurn(requestId: String) {
-        val callerUid = Binder.getCallingUid()
+        val callerUid = getCallingUid()
         enforceCaller()
         val record = inFlight[requestId] ?: return
         if (record.callerUid != callerUid) {
@@ -141,6 +178,14 @@ internal class AssistantServiceV2Binder(
     override fun getHistoryPage(queryJson: String): String {
         val callerPackage = enforceCaller()
 
+        val isAccessAllowed = kotlinx.coroutines.runBlocking {
+            accessPolicy.isClientAccessAllowed(callerPackage)
+        }
+        if (!isAccessAllowed) {
+            val emptyPage = HistoryPage(emptyList(), emptyList(), null, false)
+            return AssistantContractV2.json.encodeToString(HistoryPage.serializer(), emptyPage)
+        }
+
         val query = try {
             AssistantContractV2.json.decodeFromString(HistoryQuery.serializer(), queryJson)
         } catch (_: Exception) {
@@ -150,11 +195,12 @@ internal class AssistantServiceV2Binder(
         val page = kotlinx.coroutines.runBlocking {
             historyRepository.getHistoryPage(query, clientFilter = callerPackage)
         }
+
         return AssistantContractV2.json.encodeToString(HistoryPage.serializer(), page)
     }
 
     private fun enforceCaller(): String =
-        callerAuthorizer(Binder.getCallingUid())
+        callerAuthorizer(getCallingUid())
 
     private fun IAssistantCallbackV2.safeEvent(requestId: String, eventJson: String) {
         runCatching { onEvent(requestId, eventJson) }

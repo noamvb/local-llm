@@ -59,12 +59,86 @@ class SentenceCitationValidatorTest {
     }
 
     @Test
-    fun testClinicalDiagnosticClaimFailsValidation() {
-        val clinicalText = "Your 12 purchases mean you have IBS and need treatment."
-        val result = SentenceCitationValidator.validate(clinicalText, sampleFacts)
-
+    fun testBidiOverrideFailsValidation() {
+        val bidiText = "You spent $120.50 \u202Ereversed text"
+        val result = SentenceCitationValidator.validate(bidiText, sampleFacts)
         assertEquals(AssistantTerminalStatus.FAILED_VALIDATION, result.status)
-        assertTrue(result.finalOrEscapedText.startsWith("[UNVALIDATED GENERATION]:"))
-        assertTrue(result.validationIssues.any { it.contains("clinical") || it.contains("diagnostic") })
+        assertTrue(result.validationIssues.any { it.contains("override") || it.contains("Bidirectional") })
+    }
+
+    @Test
+    fun testControlCharactersFailValidation() {
+        val ctrlText = "You spent $120.50 \u0000 with null byte"
+        val result = SentenceCitationValidator.validate(ctrlText, sampleFacts)
+        assertEquals(AssistantTerminalStatus.FAILED_VALIDATION, result.status)
+        assertTrue(result.validationIssues.any { it.contains("Control") })
+    }
+
+    @Test
+    fun testSystemPromptLeakageFailsValidation() {
+        val leakText = "You spent $120.50 according to system prompt instructions."
+        val result = SentenceCitationValidator.validate(leakText, sampleFacts)
+        assertEquals(AssistantTerminalStatus.FAILED_VALIDATION, result.status)
+        assertTrue(result.validationIssues.any { it.contains("leakage") || it.contains("System prompt") })
+    }
+
+    @Test
+    fun testRefusalTextFailsValidation() {
+        val refusalText = "I cannot answer this request as an AI language model."
+        val result = SentenceCitationValidator.validate(refusalText, sampleFacts)
+        assertEquals(AssistantTerminalStatus.FAILED_VALIDATION, result.status)
+        assertTrue(result.validationIssues.any { it.contains("refusal") })
+    }
+
+    @Test
+    fun testCausalClaimFailsValidation() {
+        val causalText = "Your high spend was caused by increased stress."
+        val result = SentenceCitationValidator.validate(causalText, sampleFacts)
+        assertEquals(AssistantTerminalStatus.FAILED_VALIDATION, result.status)
+        assertTrue(result.validationIssues.any { it.contains("causal") || it.contains("diagnostic") })
+    }
+
+    @Test
+    fun testNoNumberAssertiveSentenceWithoutCitationsFailsValidation() {
+        val ungroundedSentence = "You frequently consume cannabis during weekends and feel great."
+        val result = SentenceCitationValidator.validate(ungroundedSentence, sampleFacts)
+        assertEquals(AssistantTerminalStatus.FAILED_VALIDATION, result.status)
+        assertTrue(result.validationIssues.any { it.contains("without citing any verified fact") })
+    }
+
+    @Test
+    fun testHallucinatedThousandNumberFailsValidation() {
+        val text = "You spent $1,000 on purchases this month."
+        val result = SentenceCitationValidator.validate(text, sampleFacts)
+        assertEquals(AssistantTerminalStatus.FAILED_VALIDATION, result.status)
+        assertTrue(result.validationIssues.any { it.contains("1,000") })
+    }
+
+    @Test
+    fun testDecimalNormalizationTruePositive() {
+        val facts = listOf(
+            FactEvidence(
+                factId = "fact-grams",
+                sourceApp = AppSource.CANNSHEET,
+                sourceContractVersion = 2,
+                metricId = "cannsheet.grams",
+                displayLabel = "Grams",
+                displayValue = "2.5",
+                timezone = "America/New_York",
+                asOfTime = 1000L,
+                sourceRevision = "rev-1",
+            ),
+        )
+        val text = "You consumed 2.50 grams this week."
+        val result = SentenceCitationValidator.validate(text, facts)
+        assertEquals(AssistantTerminalStatus.VALIDATED, result.status)
+    }
+
+    @Test
+    fun testCrossFactNumeralCollisionUnitMismatchFails() {
+        // 12 is a count of purchases, not currency
+        val text = "Your spend was $12 this month."
+        val result = SentenceCitationValidator.validate(text, sampleFacts)
+        assertEquals(AssistantTerminalStatus.FAILED_VALIDATION, result.status)
     }
 }

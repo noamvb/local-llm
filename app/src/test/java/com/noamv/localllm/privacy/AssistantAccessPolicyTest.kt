@@ -72,6 +72,14 @@ class AssistantAccessPolicyTest {
         assertTrue(policy.isSourceQueryAllowed("CANNSHEET"))
         assertFalse(policy.isSourceQueryAllowed("POOP_SCHEDULE"))
     }
+
+    @Test
+    fun testUnknownPackageAndSourceAreDenied() = runTest {
+        assertFalse(policy.isClientAccessAllowed("com.unknown.malicious"))
+        assertFalse(policy.isClientAccessAllowed("com.malicious.cannsheet_stealer"))
+        assertFalse(policy.isSourceQueryAllowed("UNKNOWN"))
+        assertFalse(policy.isSourceQueryAllowed("OTHER_APP"))
+    }
 }
 
 class FakeDataStore : DataStore<Preferences> {

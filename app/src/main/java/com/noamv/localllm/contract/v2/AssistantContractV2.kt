@@ -161,7 +161,11 @@ object QueryFilterSerializer : KSerializer<QueryFilter> {
         val fieldStr = (jsonObject["field"] as? JsonPrimitive)?.content ?: ""
         val operatorStr = (jsonObject["operator"] as? JsonPrimitive)?.content ?: ""
         val valElement = jsonObject["value"] as? JsonPrimitive
-        val valStr = valElement?.intOrNull?.toString() ?: valElement?.content ?: ""
+        val valStr = if (fieldStr == "poop.bristol_type") {
+            valElement?.intOrNull?.toString() ?: valElement?.content ?: ""
+        } else {
+            valElement?.content ?: ""
+        }
 
         val source = try {
             AppSource.valueOf(sourceStr)
@@ -302,12 +306,13 @@ data class AssistantTurnRequest(
     val requestId: String,
     val threadId: String,
     val initiatingClient: String,
-    val question: String,
+    val question: String = "",
     val defaultSource: AppSource,
     val maxSourcesAllowed: Int = 1,
     val allowCrossApp: Boolean = false,
     val responseLengthPolicy: ResponseLengthPolicy = ResponseLengthPolicy.NORMAL,
     val deadlineMillis: Long = 90_000L,
+    val fixedQuery: AggregateQuery? = null,
 )
 
 /** Host assistant capabilities document. */

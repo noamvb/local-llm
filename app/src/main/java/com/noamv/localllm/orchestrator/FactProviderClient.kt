@@ -114,6 +114,33 @@ internal class FactProviderClient(
                     }
                 }
 
+                val providerVersion = try {
+                    provider.getProviderVersion()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to get provider version from $targetPackage", e)
+                    -1
+                }
+
+                if (providerVersion != AssistantContractV2.VERSION) {
+                    Log.w(TAG, "Provider version mismatch for $targetPackage: expected ${AssistantContractV2.VERSION}, got $providerVersion")
+                    if (!unbindOnce.getAndSet(true)) {
+                        runCatching { appContext.unbindService(connection) }
+                    }
+                    if (cont.isActive) {
+                        cont.resume(
+                            ProviderFactsResult(
+                                sourceApp = source,
+                                facts = emptyList(),
+                                revision = "version_mismatch",
+                                asOfTime = System.currentTimeMillis(),
+                                timezone = "UTC",
+                                warnings = listOf("Provider version mismatch for $source: expected v${AssistantContractV2.VERSION}, got v$providerVersion"),
+                            ),
+                        )
+                    }
+                    return
+                }
+
                 try {
                     val queryJson = AssistantContractV2.json.encodeToString(AggregateQuery.serializer(), query)
                     val qId = provider.queryFacts(queryJson, callback)

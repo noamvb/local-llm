@@ -134,8 +134,34 @@ class LocalLlmApplication : Application() {
 
     internal val foregroundTransferCancellation = ForegroundTransferCancellationRegistry()
 
+    private var idleCheckJob: kotlinx.coroutines.Job? = null
+    @Volatile
+    private var lastActivityTime: Long = System.currentTimeMillis()
+
+    fun recordInferenceActivity() {
+        lastActivityTime = System.currentTimeMillis()
+        scheduleIdleUnloadCheck()
+    }
+
+    internal fun scheduleIdleUnloadCheck(delayMillis: Long = ModelResidencyCoordinator.IDLE_TIMEOUT_MILLIS) {
+        idleCheckJob?.cancel()
+        idleCheckJob = applicationScope.launch {
+            kotlinx.coroutines.delay(delayMillis)
+            if (residencyCoordinator.isIdleExpired(lastActivityTime)) {
+                if (engineDelegate.isInitialized()) {
+                    engine.unload()
+                }
+            }
+        }
+    }
+
     /** One admission owner for every native generation role in this process. */
-    val inferenceScheduler: InferenceScheduler by lazy { InferenceScheduler(applicationScope) }
+    val inferenceScheduler: InferenceScheduler by lazy {
+        InferenceScheduler(
+            scope = applicationScope,
+            onActivityFinished = ::recordInferenceActivity,
+        )
+    }
 
     private val processWorkEpoch = ProcessWorkEpoch()
 
