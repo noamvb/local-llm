@@ -2,6 +2,7 @@ package com.noamv.localllm.ui
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Arrangement
@@ -12,6 +13,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -20,20 +24,26 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.noamv.localllm.contract.EngineState
+import com.noamv.localllm.ui.theme.LocalLlmTheme
+import com.noamv.localllm.ui.theme.ThemeMode
+import com.noamv.localllm.ui.theme.resolveDarkTheme
 
 /**
  * The manager UI. This app has no chat surface by design: it exists to hold the model
@@ -56,10 +66,29 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            MaterialTheme {
+            val managerViewModel: ManagerViewModel = viewModel(factory = ManagerViewModel.Factory)
+            val themeMode by managerViewModel.themeMode.collectAsStateWithLifecycle()
+            val darkTheme = resolveDarkTheme(themeMode, isSystemInDarkTheme())
+
+            // Re-applied on every change: enableEdgeToEdge() decides system bar ICON colour, and
+            // an in-app override can disagree with the system setting.
+            SideEffect {
+                enableEdgeToEdge(
+                    statusBarStyle = SystemBarStyle.auto(
+                        android.graphics.Color.TRANSPARENT,
+                        android.graphics.Color.TRANSPARENT,
+                    ) { darkTheme },
+                    navigationBarStyle = SystemBarStyle.auto(
+                        android.graphics.Color.TRANSPARENT,
+                        android.graphics.Color.TRANSPARENT,
+                    ) { darkTheme },
+                )
+            }
+
+            LocalLlmTheme(darkTheme = darkTheme) {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     ManagerScreen(
-                        viewModel = viewModel(factory = ManagerViewModel.Factory),
+                        viewModel = managerViewModel,
                         onRequestNotificationPermission = {
                             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
                                 notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
@@ -82,6 +111,7 @@ private fun ManagerScreen(
     val selfTest by viewModel.selfTest.collectAsStateWithLifecycle()
     val transfer by viewModel.transferStatus.collectAsStateWithLifecycle()
     val transferCommandMessage by viewModel.transferCommandMessage.collectAsStateWithLifecycle()
+    val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
 
     val masterAssistantEnabled by viewModel.masterAssistantEnabled.collectAsStateWithLifecycle()
     val cannsheetAccessEnabled by viewModel.cannsheetAccessEnabled.collectAsStateWithLifecycle()
@@ -184,6 +214,67 @@ private fun ManagerScreen(
         selfTest?.let {
             Text("Self-test output", style = MaterialTheme.typography.titleMedium)
             Text(it, style = MaterialTheme.typography.bodyMedium)
+        }
+
+        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+        Text("Appearance", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Your choice is remembered on this device.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .selectableGroup(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Row(
+                modifier = Modifier.selectable(
+                    selected = themeMode == ThemeMode.SYSTEM,
+                    onClick = { viewModel.setThemeMode(ThemeMode.SYSTEM) },
+                    role = Role.RadioButton,
+                ),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RadioButton(
+                    selected = themeMode == ThemeMode.SYSTEM,
+                    onClick = null,
+                )
+                Text("System")
+            }
+
+            Row(
+                modifier = Modifier.selectable(
+                    selected = themeMode == ThemeMode.LIGHT,
+                    onClick = { viewModel.setThemeMode(ThemeMode.LIGHT) },
+                    role = Role.RadioButton,
+                ),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RadioButton(
+                    selected = themeMode == ThemeMode.LIGHT,
+                    onClick = null,
+                )
+                Text("Light")
+            }
+
+            Row(
+                modifier = Modifier.selectable(
+                    selected = themeMode == ThemeMode.DARK,
+                    onClick = { viewModel.setThemeMode(ThemeMode.DARK) },
+                    role = Role.RadioButton,
+                ),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RadioButton(
+                    selected = themeMode == ThemeMode.DARK,
+                    onClick = null,
+                )
+                Text("Dark")
+            }
         }
 
         HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))

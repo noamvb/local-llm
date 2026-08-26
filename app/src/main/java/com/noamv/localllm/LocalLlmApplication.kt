@@ -27,6 +27,7 @@ import com.noamv.localllm.transfer.ModelTransferStatusCoordinator
 import com.noamv.localllm.transfer.TransferNetworkPolicy
 import com.noamv.localllm.transfer.TransferStopReason
 import com.noamv.localllm.transfer.resolveTransferNetworkBlockReason
+import com.noamv.localllm.ui.theme.ThemePreferences
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -90,6 +91,8 @@ class LocalLlmApplication : Application() {
     val accessPolicy: AssistantAccessPolicy by lazy {
         AssistantAccessPolicy(this)
     }
+
+    val themePreferences: ThemePreferences by lazy { ThemePreferences(this) }
 
     internal val residencyCoordinator: ModelResidencyCoordinator by lazy {
         ModelResidencyCoordinator(this)
