@@ -40,6 +40,8 @@ import java.util.concurrent.atomic.AtomicReference
 
 import com.noamv.localllm.history.AssistantHistoryRepository
 import com.noamv.localllm.privacy.AssistantAccessPolicy
+import com.noamv.localllm.ui.theme.ThemeMode
+import com.noamv.localllm.ui.theme.ThemePreferences
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
 
@@ -53,6 +55,7 @@ internal class ManagerViewModel(
     private val scheduler: InferenceScheduler,
     private val historyRepository: AssistantHistoryRepository? = null,
     private val accessPolicy: AssistantAccessPolicy? = null,
+    private val themePreferences: ThemePreferences? = null,
 ) : ViewModel() {
 
     val status: StateFlow<EngineStatus> = engine.status
@@ -79,6 +82,13 @@ internal class ManagerViewModel(
             AssistantAccessPolicy.DEFAULT_POOP_SCHEDULE_ENABLED,
         ) ?: MutableStateFlow(true)
 
+    val themeMode: StateFlow<ThemeMode> =
+        themePreferences?.themeMode?.stateIn(
+            viewModelScope,
+            SharingStarted.Eagerly,
+            ThemePreferences.DEFAULT_THEME_MODE,
+        ) ?: MutableStateFlow(ThemePreferences.DEFAULT_THEME_MODE)
+
     fun setMasterAssistantEnabled(enabled: Boolean) {
         viewModelScope.launch { accessPolicy?.setMasterEnabled(enabled) }
     }
@@ -89,6 +99,10 @@ internal class ManagerViewModel(
 
     fun setPoopScheduleAccessEnabled(enabled: Boolean) {
         viewModelScope.launch { accessPolicy?.setPoopScheduleEnabled(enabled) }
+    }
+
+    fun setThemeMode(mode: ThemeMode) {
+        viewModelScope.launch { themePreferences?.setThemeMode(mode) }
     }
 
     fun clearAllHistory(onComplete: (() -> Unit)? = null) {
@@ -249,6 +263,7 @@ internal class ManagerViewModel(
                     scheduler = app.inferenceScheduler,
                     historyRepository = app.historyRepository,
                     accessPolicy = app.accessPolicy,
+                    themePreferences = app.themePreferences,
                 )
             }
         }
