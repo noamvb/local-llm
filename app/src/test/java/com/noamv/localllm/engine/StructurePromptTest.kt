@@ -13,7 +13,7 @@ class StructurePromptTest {
         val prompt = StructurePrompts.forDictation(text, listOf("todo", "note"))
 
         assertEquals(
-            "You sort one short dictated sentence for a personal inbox. Decide whether it is a todo (something the speaker intends to do, buy, send, remember, or be reminded of) or a note (a thought, fact, idea, or observation with no action). Rewrite the text: for a todo, a short imperative starting with a verb; for a note, the sentence as spoken with filler removed. Capitalise the first letter. Give a confidence between 0 and 1 for the kind decision. Reply with JSON only.",
+            "You sort one short dictated sentence for a personal inbox. Decide whether it is a todo (something the speaker intends to do, buy, send, remember, or be reminded of) or a note (a thought, fact, idea, or observation with no action). Rewrite the text: for a todo, a short imperative starting with a verb; for a note, the sentence as spoken with filler removed. Capitalise the first letter. Give a confidence between 0 and 1 for the kind decision. Reply with JSON only. Use exactly these keys: \"kind\" (todo or note), \"text\", \"confidence\".",
             prompt.systemInstruction,
         )
         assertEquals(text, prompt.userMessage)

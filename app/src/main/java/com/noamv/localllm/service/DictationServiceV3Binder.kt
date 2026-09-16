@@ -13,6 +13,7 @@ import com.noamv.localllm.contract.v3.StructureRequest
 import com.noamv.localllm.contract.v3.StructureResultFields
 import com.noamv.localllm.engine.LlmEngine
 import com.noamv.localllm.engine.StructurePrompts
+import com.noamv.localllm.engine.StructureOutputParser
 import com.noamv.localllm.contract.v3.SpeechModelCapability
 import com.noamv.localllm.speech.AudioFormatException
 import com.noamv.localllm.speech.DictationBusyException
@@ -173,17 +174,7 @@ internal class DictationServiceV3Binder(
             try {
                 val raw = llmEngine.structure(StructurePrompts.forDictation(request.text, request.kinds))
                 Log.d(TAG, "structure raw requestId=$requestId chars=${raw.length} text=${raw.take(400)}")
-                val parsed = DictationContractV3.json.decodeFromString(
-                    StructureResultFields.serializer(),
-                    raw,
-                )
-                if (parsed.kind !in request.kinds ||
-                    parsed.confidence.isNaN() ||
-                    parsed.confidence < 0.0 ||
-                    parsed.confidence > 1.0
-                ) {
-                    throw IllegalArgumentException("Structure result does not match the request")
-                }
+                val parsed = StructureOutputParser.parse(raw, request.kinds.toSet())
                 val resultJson = DictationContractV3.json.encodeToString(
                     StructureResultFields.serializer(),
                     parsed.copy(

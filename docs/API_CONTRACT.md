@@ -334,7 +334,10 @@ or the sentence as spoken for a note, with filler removed and the first letter c
 The schema handed to constrained decoding is
 `{"type":"object","properties":{"kind":{"type":"string","enum":["todo","note"]},"text":{"type":"string"},"confidence":{"type":"number","minimum":0,"maximum":1}},"required":["kind","text","confidence"]}`.
 Constrained decoding: the service passes `STRUCTURE_SCHEMA` to LiteRT-LM's
-`ResponseFormat`; a client never receives non-JSON, and an unparsable reply is error 7.
+`ResponseFormat`; if strict decoding fails, the service extracts the first balanced JSON object,
+decodes it while ignoring unknown keys, and normalizes `decision` to `kind`,
+`rewritten_text`/`rewrite`/`item` to `text`, and `score` to `confidence`. A client never receives
+non-JSON, and an unparsable reply or a result whose `kind` is not requested is error 7.
 
 Error codes (`errorCode int`):
 

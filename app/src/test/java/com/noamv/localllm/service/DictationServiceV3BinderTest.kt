@@ -155,6 +155,23 @@ class DictationServiceV3BinderTest {
     }
 
     @Test
+    fun legacyStructureEnvelopeWithSynonymsReportsExactEncodedResultJson() = runTest {
+        val callback = RecordingCallback()
+        makeBinder(
+            FakeEngine(),
+            llmEngine = FakeLlmEngine(
+                "{\"{\n  \"decision\": \"todo\",\n  \"confidence\": 1.0,\n  \"rewritten_text\": \"Buy milk tomorrow\"\n}\n}",
+            ),
+        ).structure(structureRequestJson(), callback)
+        advanceUntilIdle()
+
+        assertEquals(
+            "{\"requestId\":\"${callback.requestId}\",\"kind\":\"todo\",\"text\":\"Buy milk tomorrow\",\"confidence\":1.0,\"model\":\"fake\",\"timingsMs\":{\"total\":0}}",
+            callback.resultJson,
+        )
+    }
+
+    @Test
     fun nonJsonStructureResultReportsEngineFailure() = runTest {
         val callback = RecordingCallback()
         makeBinder(FakeEngine(), llmEngine = FakeLlmEngine("not-json")).structure(structureRequestJson(), callback)

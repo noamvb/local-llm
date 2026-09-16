@@ -9,6 +9,8 @@ import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.ExperimentalApi
+import com.google.ai.edge.litertlm.ExperimentalFlags
 import com.google.ai.edge.litertlm.ResponseFormat
 import com.google.ai.edge.litertlm.SamplerConfig
 import com.noamv.localllm.contract.EngineState
@@ -378,6 +380,7 @@ internal class LiteRtEngine internal constructor(
         }
     }.flowOn(Dispatchers.IO)
 
+    @OptIn(ExperimentalApi::class)
     override suspend fun structure(prompt: StructurePrompt): String {
         val startedAt = SystemClock.elapsedRealtime()
         val warm = lifecycle.isReady
@@ -391,7 +394,19 @@ internal class LiteRtEngine internal constructor(
                     maxOutputToken = 96,
                     samplerConfig = SamplerConfig(topK = 1, topP = 1.0, temperature = 0.0),
                 )
-                loaded.handle.createConversation(config).use { conversation ->
+                // LiteRT-LM v0.16.1 Engine.kt:136-156 passes
+                // ExperimentalFlags.enableConversationConstrainedDecoding into the native
+                // conversation, while ExperimentalFlags.kt:44-50 defaults it to false.
+                // ResponseFormat.kt:33-44 confirms that json(String) expects a JSON Schema,
+                // and Conversation.kt:119-143 passes the response format on sendMessage.
+                val previousConstrainedDecoding = ExperimentalFlags.enableConversationConstrainedDecoding
+                ExperimentalFlags.enableConversationConstrainedDecoding = true
+                val conversation = try {
+                    loaded.handle.createConversation(config)
+                } finally {
+                    ExperimentalFlags.enableConversationConstrainedDecoding = previousConstrainedDecoding
+                }
+                conversation.use { conversation ->
                     val message = conversation.sendMessage(
                         prompt.userMessage,
                         responseFormat = ResponseFormat.json(prompt.schema),
