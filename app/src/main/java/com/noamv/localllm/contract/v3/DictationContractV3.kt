@@ -59,6 +59,29 @@ data class DictationResultFields(
     val timingsMs: DictationTimings = DictationTimings(),
 )
 
+@Serializable
+data class StructureRequest(
+    val text: String,
+    val kinds: List<String> = listOf("todo", "note"),
+)
+
+@Serializable
+data class StructureTimings(
+    val total: Long = 0,
+)
+
+@Serializable
+data class StructureResultFields(
+    val requestId: String = "",
+    val kind: String,
+    val text: String,
+    val confidence: Double,
+    val model: String = "",
+    val timingsMs: StructureTimings = StructureTimings(),
+)
+
+typealias StructureResult = StructureResultFields
+
 object DictationError {
     const val UNAUTHORIZED = 1
     const val BAD_REQUEST = 2

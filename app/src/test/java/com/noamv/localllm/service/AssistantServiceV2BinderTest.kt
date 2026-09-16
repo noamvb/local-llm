@@ -16,6 +16,7 @@ import com.noamv.localllm.engine.EngineTimings
 import com.noamv.localllm.engine.InferenceScheduler
 import com.noamv.localllm.engine.LlmEngine
 import com.noamv.localllm.engine.ModelResidencyCoordinator
+import com.noamv.localllm.engine.StructurePrompt
 import com.noamv.localllm.history.AssistantHistoryRepository
 import com.noamv.localllm.history.FakeAssistantHistoryDao
 import com.noamv.localllm.orchestrator.AssistantOrchestratorV2
@@ -164,6 +165,10 @@ class AssistantServiceV2BinderTest {
 
         override suspend fun prepare(onProgress: (Int, String) -> Unit) = Unit
         override fun generate(request: InsightRequest): Flow<String> = flowOf("Sample response")
+
+        override suspend fun structure(prompt: StructurePrompt): String =
+            throw UnsupportedOperationException("structure is not used by this fixture")
+
         override suspend fun unload() = Unit
         override fun close() = Unit
     }

@@ -52,7 +52,11 @@ android {
 
     externalNativeBuild {
       cmake {
-        arguments += listOf("-DANDROID_STL=c++_shared")
+        // whisper at -O0 is ~30x slower than -O3 (measured 16 Sep 2026: 40 s vs 1.4 s for
+        // 3 s of audio on a Z Fold 7), so the native library is always an optimised build,
+        // debug and sandbox variants included. AGP's own -DCMAKE_BUILD_TYPE comes first
+        // and this later argument wins.
+        arguments += listOf("-DANDROID_STL=c++_shared", "-DCMAKE_BUILD_TYPE=Release")
         cppFlags += "-std=c++17"
       }
     }

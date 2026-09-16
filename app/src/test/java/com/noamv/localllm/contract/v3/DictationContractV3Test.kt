@@ -44,4 +44,31 @@ class DictationContractV3Test {
             DictationContractV3.json.encodeToString(DictationResultFields.serializer(), result),
         )
     }
+
+    @Test
+    fun decodesStructureRequestLiteralWithDefaultKinds() {
+        val request = DictationContractV3.json.decodeFromString(
+            StructureRequest.serializer(),
+            "{\"text\":\"remind me to buy milk tomorrow\"}",
+        )
+
+        assertEquals("remind me to buy milk tomorrow", request.text)
+        assertEquals(listOf("todo", "note"), request.kinds)
+    }
+
+    @Test
+    fun encodesStructureResultExactly() {
+        val result = StructureResult(
+            requestId = "id-1",
+            kind = "todo",
+            text = "Buy milk tomorrow",
+            confidence = 0.92,
+            model = "gemma-4-E2B-it-gpu",
+        )
+
+        assertEquals(
+            "{\"requestId\":\"id-1\",\"kind\":\"todo\",\"text\":\"Buy milk tomorrow\",\"confidence\":0.92,\"model\":\"gemma-4-E2B-it-gpu\",\"timingsMs\":{\"total\":0}}",
+            DictationContractV3.json.encodeToString(StructureResult.serializer(), result),
+        )
+    }
 }

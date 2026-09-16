@@ -7,6 +7,10 @@ import com.noamv.localllm.contract.v3.DictationContractV3
 import com.noamv.localllm.contract.v3.DictationError
 import com.noamv.localllm.contract.v3.DictationRequest
 import com.noamv.localllm.contract.v3.DictationResultFields
+import com.noamv.localllm.contract.v3.StructureRequest
+import com.noamv.localllm.contract.v3.StructureResultFields
+import com.noamv.localllm.engine.LlmEngine
+import com.noamv.localllm.engine.StructurePrompts
 import com.noamv.localllm.contract.v3.SpeechModelCapability
 import com.noamv.localllm.speech.AudioFormatException
 import com.noamv.localllm.speech.DictationBusyException
@@ -29,6 +33,7 @@ internal class DictationServiceV3Binder(
     private val scope: CoroutineScope,
     private val callerAuthorizer: (Int) -> String,
     private val engine: DictationEngine,
+    private val llmEngine: LlmEngine,
     private val getCallingUid: () -> Int = { Binder.getCallingUid() },
     private val readAudio: (ParcelFileDescriptor?) -> FloatArray = { descriptor ->
         requireNotNull(descriptor) { "audio descriptor is missing" }
@@ -119,6 +124,69 @@ internal class DictationServiceV3Binder(
         return requestId
     }
 
+    override fun structure(
+        requestJson: String,
+        callback: IDictationCallbackV3,
+    ): String {
+        enforceCaller()
+        val requestId = UUID.randomUUID().toString()
+        val request = try {
+            DictationContractV3.json.decodeFromString(StructureRequest.serializer(), requestJson)
+        } catch (_: Exception) {
+            callback.safeError(requestId, DictationError.BAD_REQUEST, "Malformed structure request JSON", false)
+            return requestId
+        }
+        if (request.text.isBlank() || request.text.length > 500) {
+            callback.safeError(requestId, DictationError.BAD_REQUEST, "text must be 1..500 characters", false)
+            return requestId
+        }
+        if (request.kinds.isEmpty() || request.kinds.any { it !in ALLOWED_STRUCTURE_KINDS }) {
+            callback.safeError(requestId, DictationError.BAD_REQUEST, "kinds must contain only todo or note", false)
+            return requestId
+        }
+        if (!active.compareAndSet(false, true)) {
+            callback.safeError(requestId, DictationError.BUSY, "Dictation is busy", true)
+            return requestId
+        }
+
+        val record = InFlightDictation(requestId, callback)
+        inFlight[requestId] = record
+        val job = scope.launch {
+            try {
+                val raw = llmEngine.structure(StructurePrompts.forDictation(request.text, request.kinds))
+                val parsed = DictationContractV3.json.decodeFromString(
+                    StructureResultFields.serializer(),
+                    raw,
+                )
+                if (parsed.kind !in request.kinds ||
+                    parsed.confidence.isNaN() ||
+                    parsed.confidence < 0.0 ||
+                    parsed.confidence > 1.0
+                ) {
+                    throw IllegalArgumentException("Structure result does not match the request")
+                }
+                val resultJson = DictationContractV3.json.encodeToString(
+                    StructureResultFields.serializer(),
+                    parsed.copy(
+                        requestId = requestId,
+                        confidence = (kotlin.math.round(parsed.confidence * 100.0) / 100.0),
+                        model = llmEngine.status.value.modelId ?: "unknown",
+                    ),
+                )
+                record.complete(resultJson)
+            } catch (_: CancellationException) {
+                record.error(DictationError.CANCELLED, "Dictation cancelled", false)
+            } catch (error: Throwable) {
+                record.error(DictationError.ENGINE_FAILURE, error.message ?: "Structure engine failed", false)
+            } finally {
+                inFlight.remove(requestId, record)
+                active.set(false)
+            }
+        }
+        record.job = job
+        return requestId
+    }
+
     override fun cancel(requestId: String) {
         enforceCaller()
         val record = inFlight[requestId] ?: return
@@ -150,6 +218,10 @@ internal class DictationServiceV3Binder(
         fun error(code: Int, message: String, retryable: Boolean) {
             if (terminal.compareAndSet(false, true)) callback.safeError(requestId, code, message, retryable)
         }
+    }
+
+    private companion object {
+        val ALLOWED_STRUCTURE_KINDS = setOf("todo", "note")
     }
 
 }

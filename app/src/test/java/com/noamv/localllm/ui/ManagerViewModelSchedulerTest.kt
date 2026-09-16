@@ -9,6 +9,7 @@ import com.noamv.localllm.engine.InferenceScheduler
 import com.noamv.localllm.engine.InferenceSchedulerSnapshot
 import com.noamv.localllm.engine.LlmEngine
 import com.noamv.localllm.engine.ModelNotInstalledException
+import com.noamv.localllm.engine.StructurePrompt
 import com.noamv.localllm.model.ModelCatalog
 import com.noamv.localllm.service.ModelTransferLaunchResult
 import com.noamv.localllm.transfer.ModelRole
@@ -254,6 +255,9 @@ class ManagerViewModelSchedulerTest {
         override suspend fun prepare(onProgress: (Int, String) -> Unit) = Unit
 
         override fun generate(request: InsightRequest): Flow<String> = generator(request)
+
+        override suspend fun structure(prompt: StructurePrompt): String =
+            throw UnsupportedOperationException("structure is not used by this fixture")
 
         override suspend fun unload() = Unit
 

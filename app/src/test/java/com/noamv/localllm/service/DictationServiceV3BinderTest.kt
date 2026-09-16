@@ -1,16 +1,26 @@
 package com.noamv.localllm.service
 
 import android.os.ParcelFileDescriptor
+import com.noamv.localllm.contract.EngineState
+import com.noamv.localllm.contract.EngineStatus
+import com.noamv.localllm.contract.InsightRequest
 import com.noamv.localllm.contract.v3.DictationContractV3
 import com.noamv.localllm.contract.v3.DictationError
 import com.noamv.localllm.contract.v3.DictationRequest
 import com.noamv.localllm.contract.v3.DictationResultFields
+import com.noamv.localllm.contract.v3.StructureRequest
+import com.noamv.localllm.engine.EngineTimings
+import com.noamv.localllm.engine.LlmEngine
+import com.noamv.localllm.engine.StructurePrompt
 import com.noamv.localllm.speech.AudioFormatException
 import com.noamv.localllm.speech.DictationEngine
 import com.noamv.localllm.speech.SpeechModelCatalog
 import com.noamv.localllm.v3.IDictationCallbackV3
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -99,14 +109,84 @@ class DictationServiceV3BinderTest {
         )
     }
 
+    @Test
+    fun unauthorizedStructureThrowsAndNeverInvokesLlmEngine() = runTest {
+        val llmEngine = FakeLlmEngine()
+        val binder = makeBinder(FakeEngine(), authorizer = { throw SecurityException("denied") }, llmEngine = llmEngine)
+
+        assertThrows(SecurityException::class.java) {
+            binder.structure(structureRequestJson(), RecordingCallback())
+        }
+        assertEquals(0, llmEngine.calls)
+    }
+
+    @Test
+    fun emptyStructureTextReportsBadRequest() = runTest {
+        val callback = RecordingCallback()
+        makeBinder(FakeEngine(), llmEngine = FakeLlmEngine()).structure(structureRequestJson(text = ""), callback)
+        advanceUntilIdle()
+        assertEquals(DictationError.BAD_REQUEST, callback.errorCode)
+    }
+
+    @Test
+    fun unknownStructureKindReportsBadRequest() = runTest {
+        val callback = RecordingCallback()
+        makeBinder(FakeEngine(), llmEngine = FakeLlmEngine()).structure(
+            structureRequestJson(kinds = listOf("todo", "event")),
+            callback,
+        )
+        advanceUntilIdle()
+        assertEquals(DictationError.BAD_REQUEST, callback.errorCode)
+    }
+
+    @Test
+    fun structureSuccessRoundsConfidenceAndReportsExactJson() = runTest {
+        val callback = RecordingCallback()
+        makeBinder(
+            FakeEngine(),
+            llmEngine = FakeLlmEngine("{\"kind\":\"todo\",\"text\":\"Buy milk\",\"confidence\":0.9123}"),
+        ).structure(structureRequestJson(), callback)
+        advanceUntilIdle()
+
+        assertEquals(
+            "{\"requestId\":\"${callback.requestId}\",\"kind\":\"todo\",\"text\":\"Buy milk\",\"confidence\":0.91,\"model\":\"fake\",\"timingsMs\":{\"total\":0}}",
+            callback.resultJson,
+        )
+    }
+
+    @Test
+    fun nonJsonStructureResultReportsEngineFailure() = runTest {
+        val callback = RecordingCallback()
+        makeBinder(FakeEngine(), llmEngine = FakeLlmEngine("not-json")).structure(structureRequestJson(), callback)
+        advanceUntilIdle()
+        assertEquals(DictationError.ENGINE_FAILURE, callback.errorCode)
+    }
+
+    @Test
+    fun structureWhileTranscribeIsInFlightReportsRetryableBusy() = runTest {
+        val fake = FakeEngine(block = true)
+        val service = makeBinder(fake, llmEngine = FakeLlmEngine())
+        service.transcribe(null, requestJson(), RecordingCallback())
+        val callback = RecordingCallback()
+
+        service.structure(structureRequestJson(), callback)
+
+        assertEquals(DictationError.BUSY, callback.errorCode)
+        assertTrue(callback.retryable)
+        fake.release()
+        advanceUntilIdle()
+    }
+
     private fun CoroutineScope.makeBinder(
         fake: FakeEngine,
         authorizer: (Int) -> String = { "com.noamv.inbox" },
         readAudio: (ParcelFileDescriptor?) -> FloatArray = { FloatArray(16_000) },
+        llmEngine: FakeLlmEngine = FakeLlmEngine(),
     ): DictationServiceV3Binder = DictationServiceV3Binder(
         scope = this,
         callerAuthorizer = authorizer,
         engine = fake,
+        llmEngine = llmEngine,
         getCallingUid = { 1234 },
         readAudio = readAudio,
     )
@@ -116,6 +196,14 @@ class DictationServiceV3BinderTest {
             DictationRequest.serializer(),
             DictationRequest(model = model),
         )
+
+    private fun structureRequestJson(
+        text: String = "remind me to buy milk",
+        kinds: List<String> = listOf("todo", "note"),
+    ): String = DictationContractV3.json.encodeToString(
+        StructureRequest.serializer(),
+        StructureRequest(text = text, kinds = kinds),
+    )
 
     private class FakeEngine(
         private val result: DictationResultFields = DictationResultFields("fake", "Hello", SpeechModelCatalog.BASE_EN.id, 1.0),
@@ -140,6 +228,29 @@ class DictationServiceV3BinderTest {
             if (block) release.await()
             return result.copy(model = build.id)
         }
+    }
+
+    private class FakeLlmEngine(
+        private val result: String = "{\"kind\":\"todo\",\"text\":\"Buy milk\",\"confidence\":0.92}",
+    ) : LlmEngine {
+        override val status = MutableStateFlow(
+            EngineStatus(
+                state = EngineState.READY,
+                modelId = "fake",
+                modelDownloaded = true,
+            ),
+        )
+        override val timings = MutableStateFlow(EngineTimings())
+        var calls = 0
+
+        override suspend fun prepare(onProgress: (Int, String) -> Unit) = Unit
+        override fun generate(request: InsightRequest): Flow<String> = flowOf()
+        override suspend fun structure(prompt: StructurePrompt): String {
+            calls++
+            return result
+        }
+        override suspend fun unload() = Unit
+        override fun close() = Unit
     }
 
     private class RecordingCallback : IDictationCallbackV3.Stub() {

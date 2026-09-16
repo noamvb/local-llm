@@ -69,6 +69,7 @@ class InferenceService : Service() {
             scope = serviceScope,
             callerAuthorizer = callerAuthorizer::enforceAuthorizedCaller,
             engine = app.whisperEngine,
+            llmEngine = app.engine,
         )
     }
 

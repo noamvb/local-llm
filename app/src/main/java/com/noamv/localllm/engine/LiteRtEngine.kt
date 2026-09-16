@@ -9,6 +9,7 @@ import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.ResponseFormat
 import com.google.ai.edge.litertlm.SamplerConfig
 import com.noamv.localllm.contract.EngineState
 import com.noamv.localllm.contract.EngineStatus
@@ -376,6 +377,49 @@ internal class LiteRtEngine internal constructor(
             throw outOfMemory
         }
     }.flowOn(Dispatchers.IO)
+
+    override suspend fun structure(prompt: StructurePrompt): String {
+        val startedAt = SystemClock.elapsedRealtime()
+        val warm = lifecycle.isReady
+        try {
+            prepare()
+            val postPrepareAt = SystemClock.elapsedRealtime()
+            val result = lifecycle.use(loader = { loadFirstInstalled { _, _ -> } }) { loaded ->
+                val config = ConversationConfig(
+                    systemInstruction = Contents.of(prompt.systemInstruction),
+                    enableResponseFormat = true,
+                    maxOutputToken = 96,
+                    samplerConfig = SamplerConfig(topK = 1, topP = 1.0, temperature = 0.0),
+                )
+                loaded.handle.createConversation(config).use { conversation ->
+                    val message = conversation.sendMessage(
+                        prompt.userMessage,
+                        responseFormat = ResponseFormat.json(prompt.schema),
+                    )
+                    val elapsed = SystemClock.elapsedRealtime() - startedAt
+                    val prefill = SystemClock.elapsedRealtime() - postPrepareAt
+                    _timings.update { timings ->
+                        timings.copy(
+                            lastTimeToFirstTokenMillis = elapsed,
+                            lastPrefillMillis = prefill,
+                            lastRequestWasWarm = warm,
+                            lastRequestDownloaded = false,
+                        )
+                    }
+                    Log.i(
+                        TAG,
+                        "structure warm=$warm downloaded=false " +
+                            "totalMs=$elapsed prefillMs=$prefill model=${loaded.build.id}",
+                    )
+                    message.toString()
+                }
+            }
+            return result
+        } catch (outOfMemory: OutOfMemoryError) {
+            publishOutOfMemory(status.value.modelId)
+            throw outOfMemory
+        }
+    }
 
     override suspend fun unload() {
         val previousBuild = activeBuild ?: startupCandidates().firstOrNull(store::isInstalled)

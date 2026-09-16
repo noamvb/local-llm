@@ -10,6 +10,8 @@ import com.noamv.localllm.contract.v3.DictationCapabilities
 import com.noamv.localllm.contract.v3.DictationContractV3
 import com.noamv.localllm.contract.v3.DictationRequest
 import com.noamv.localllm.contract.v3.DictationResultFields
+import com.noamv.localllm.contract.v3.StructureRequest
+import com.noamv.localllm.contract.v3.StructureResultFields
 import com.noamv.localllm.v3.IDictationCallbackV3
 import com.noamv.localllm.v3.IDictationServiceV3
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -27,6 +29,9 @@ class DictationClientV3(
     context: Context,
     private val servicePackageName: String = "com.noamv.localllm",
     private val bindTimeoutMillis: Long = 5_000L,
+    // Covers bind + a cold service start + model load + decoding; measured 16 Sep 2026
+    // on a Z Fold 7: base.en needs ~3 s for 11 s of audio after a ~1 s cold start.
+    private val requestTimeoutMillis: Long = 45_000L,
 ) {
     private val appContext = context.applicationContext ?: context
 
@@ -36,7 +41,7 @@ class DictationClientV3(
     suspend fun transcribe(
         wavFile: File,
         model: String = "whisper-base-en",
-    ): DictationResult = withTimeout(bindTimeoutMillis) {
+    ): DictationResult = withTimeout(requestTimeoutMillis) {
         withService { service ->
             if (service.apiVersion != DictationContractV3.VERSION) {
                 throw Unavailable("Incompatible dictation API version: ${service.apiVersion}")
@@ -109,6 +114,62 @@ class DictationClientV3(
                 DictationCapabilities.serializer(),
                 service.capabilitiesJson,
             )
+        }
+    }
+
+    suspend fun structure(text: String): StructureResultFields = withTimeout(bindTimeoutMillis) {
+        withService { service ->
+            if (service.apiVersion != DictationContractV3.VERSION) {
+                throw Unavailable("Incompatible dictation API version: ${service.apiVersion}")
+            }
+            suspendCancellableCoroutine { continuation ->
+                val terminal = AtomicBoolean(false)
+                val requestId = AtomicReference<String?>(null)
+                val callback = object : IDictationCallbackV3.Stub() {
+                    override fun onProgress(requestId: String?, percent: Int, stage: String?) = Unit
+
+                    override fun onComplete(requestId: String?, resultJson: String?) {
+                        if (!terminal.compareAndSet(false, true)) return
+                        try {
+                            if (resultJson == null) throw Unavailable("LocalLLM returned no structure result")
+                            continuation.resume(
+                                DictationContractV3.json.decodeFromString(
+                                    StructureResultFields.serializer(),
+                                    resultJson,
+                                ),
+                            )
+                        } catch (error: Throwable) {
+                            continuation.resumeWithException(error)
+                        }
+                    }
+
+                    override fun onError(requestId: String?, errorCode: Int, message: String?, retryable: Boolean) {
+                        if (!terminal.compareAndSet(false, true)) return
+                        continuation.resumeWithException(
+                            DictationFailed(errorCode, message ?: "Dictation failed", retryable),
+                        )
+                    }
+                }
+                try {
+                    requestId.set(
+                        service.structure(
+                            DictationContractV3.json.encodeToString(
+                                StructureRequest.serializer(),
+                                StructureRequest(text = text),
+                            ),
+                            callback,
+                        ),
+                    )
+                } catch (error: Throwable) {
+                    if (terminal.compareAndSet(false, true)) continuation.resumeWithException(Unavailable("Failed to start structure", error))
+                    return@suspendCancellableCoroutine
+                }
+                continuation.invokeOnCancellation {
+                    if (terminal.compareAndSet(false, true)) {
+                        requestId.get()?.let { runCatching { service.cancel(it) } }
+                    }
+                }
+            }
         }
     }
 
