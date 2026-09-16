@@ -1,14 +1,16 @@
 package com.noamv.localllm.speech
 
+import com.noamv.localllm.model.DownloadableModel
+
 data class SpeechModelBuild(
-    val id: String,
-    val displayName: String,
+    override val id: String,
+    override val displayName: String,
     val repo: String,
-    val fileName: String,
-    val sizeBytes: Long,
-    val sha256: String,
-) {
-    val url: String get() = "https://huggingface.co/$repo/resolve/main/$fileName?download=true"
+    override val fileName: String,
+    override val sizeBytes: Long,
+    override val sha256: String,
+) : DownloadableModel {
+    override val url: String get() = "https://huggingface.co/$repo/resolve/main/$fileName?download=true"
 }
 
 object SpeechModelCatalog {

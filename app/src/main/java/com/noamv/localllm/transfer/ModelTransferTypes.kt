@@ -10,6 +10,7 @@ import com.noamv.localllm.model.ModelDownloadTooLargeException
 import com.noamv.localllm.model.ModelNetworkException
 import com.noamv.localllm.model.ModelPromotionException
 import com.noamv.localllm.model.ModelStorageException
+import com.noamv.localllm.model.DownloadableModel
 import java.io.IOException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
@@ -20,14 +21,17 @@ import kotlinx.coroutines.flow.asStateFlow
 internal enum class ModelRole(val displayName: String) {
     ROUTER("Router"),
     WRITER("Writer"),
+    SPEECH("Speech"),
 }
 
 internal data class ModelTransferDescriptor(
     val role: ModelRole,
-    val modelId: String,
-    val modelName: String,
-    val expectedBytes: Long,
-)
+    val model: DownloadableModel,
+) {
+    val modelId: String get() = model.id
+    val modelName: String get() = model.displayName
+    val expectedBytes: Long get() = model.sizeBytes
+}
 
 internal enum class TransferNetworkPolicy {
     UNMETERED_WIFI,

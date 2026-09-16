@@ -66,23 +66,23 @@ sealed class ModelStoreException(message: String, cause: Throwable? = null) :
 class InsufficientModelStorageException(
     val requiredFreeBytes: Long,
     val availableFreeBytes: Long,
-    build: ModelBuild,
+    build: DownloadableModel,
 ) : ModelStoreException(
     "Not enough free space for ${build.displayName}: " +
         "$requiredFreeBytes bytes required, $availableFreeBytes bytes available.",
 )
 
-class ModelNetworkException(build: ModelBuild, cause: IOException) :
+class ModelNetworkException(build: DownloadableModel, cause: IOException) :
     ModelStoreException("Network failure while downloading ${build.fileName}.", cause)
 
-class ModelDownloadHttpException(val statusCode: Int, build: ModelBuild) :
+class ModelDownloadHttpException(val statusCode: Int, build: DownloadableModel) :
     ModelStoreException("Download failed with HTTP $statusCode for ${build.fileName}.")
 
 class InvalidModelRangeException(
     val contentRange: String?,
     val expectedStart: Long,
     val expectedTotal: Long,
-    build: ModelBuild,
+    build: DownloadableModel,
 ) : ModelStoreException(
     "Invalid Content-Range for ${build.fileName}: expected bytes beginning at " +
         "$expectedStart of $expectedTotal, received ${contentRange ?: "no header"}.",
@@ -91,7 +91,7 @@ class InvalidModelRangeException(
 class ModelDownloadTooLargeException(
     val maximumBytes: Long,
     val observedBytes: Long,
-    build: ModelBuild,
+    build: DownloadableModel,
 ) : ModelStoreException(
     "Download exceeded the pinned size for ${build.fileName}: " +
         "$observedBytes bytes observed, $maximumBytes bytes allowed.",
@@ -100,7 +100,7 @@ class ModelDownloadTooLargeException(
 class IncompleteModelDownloadException(
     val expectedBytes: Long,
     val actualBytes: Long,
-    build: ModelBuild,
+    build: DownloadableModel,
 ) : ModelStoreException(
     "Download ended early for ${build.fileName}: " +
         "$actualBytes of $expectedBytes bytes are available.",
@@ -109,7 +109,7 @@ class IncompleteModelDownloadException(
 class ModelChecksumException(
     val expectedSha256: String,
     val actualSha256: String,
-    build: ModelBuild,
+    build: DownloadableModel,
 ) : ModelStoreException(
     "Model verification failed for ${build.fileName}. " +
         "Expected $expectedSha256 but the downloaded file hashed to $actualSha256.",
@@ -118,12 +118,12 @@ class ModelChecksumException(
 class ModelStorageException(message: String, cause: Throwable? = null) :
     ModelStoreException(message, cause)
 
-class ModelPromotionException(build: ModelBuild, cause: Throwable) :
+class ModelPromotionException(build: DownloadableModel, cause: Throwable) :
     ModelStoreException("Could not atomically promote the verified ${build.fileName}.", cause)
 
 class ModelDownloadResponseLimitException(
     val maximumResponses: Int,
-    build: ModelBuild,
+    build: DownloadableModel,
 ) : ModelStoreException(
     "Download used more than $maximumResponses partial responses for ${build.fileName}.",
 )
@@ -170,19 +170,19 @@ class ModelStore internal constructor(
             }
         }
 
-    fun fileFor(build: ModelBuild): File = File(modelsDir, build.fileName)
+    fun fileFor(build: DownloadableModel): File = File(modelsDir, build.fileName)
 
-    internal fun partFor(build: ModelBuild): File = File(modelsDir, "${build.fileName}.part")
+    internal fun partFor(build: DownloadableModel): File = File(modelsDir, "${build.fileName}.part")
 
     /** True when the model is present. Does not re-verify the digest, which is slow. */
-    fun isInstalled(build: ModelBuild): Boolean =
+    fun isInstalled(build: DownloadableModel): Boolean =
         fileFor(build).let { it.isFile && it.length() == build.sizeBytes }
 
     /** Free space on the volume holding the model directory. */
     fun freeBytes(): Long = freeBytesProvider(modelsDir)
 
     /** Bytes still required after accounting for a valid partial download. */
-    fun remainingDownloadBytes(build: ModelBuild): Long {
+    fun remainingDownloadBytes(build: DownloadableModel): Long {
         val partialBytes = partFor(build).takeIf { it.isFile }?.length().orZero()
         return if (partialBytes in 0..build.sizeBytes) {
             build.sizeBytes - partialBytes
@@ -192,7 +192,7 @@ class ModelStore internal constructor(
     }
 
     /** Safely retained bytes that a later explicit owner action can resume. */
-    fun partialBytes(build: ModelBuild): Long = partFor(build)
+    fun partialBytes(build: DownloadableModel): Long = partFor(build)
         .takeIf { it.isFile }
         ?.length()
         ?.takeIf { it in 0L..build.sizeBytes }
@@ -200,7 +200,7 @@ class ModelStore internal constructor(
 
     /** Reads installed/partial file truth without creating the model directory. */
     internal fun transferByteSnapshot(
-        build: ModelBuild,
+        build: DownloadableModel,
         transferredThisRunBytes: Long = 0L,
         promotionCommitted: Boolean = false,
     ): ModelTransferByteSnapshot {
@@ -226,14 +226,14 @@ class ModelStore internal constructor(
     }
 
     /** Remaining model bytes plus the fixed safety headroom. */
-    fun requiredFreeBytes(build: ModelBuild): Long =
+    fun requiredFreeBytes(build: DownloadableModel): Long =
         remainingDownloadBytes(build).saturatedPlus(STORAGE_HEADROOM_BYTES)
 
     /**
      * Headroom required before starting. A resumed transfer needs only its remaining
      * bytes, not another full copy of the pinned artifact.
      */
-    fun hasRoomFor(build: ModelBuild): Boolean = freeBytes() >= requiredFreeBytes(build)
+    fun hasRoomFor(build: DownloadableModel): Boolean = freeBytes() >= requiredFreeBytes(build)
 
     /**
      * Downloads [build] if it is not already installed, resuming a valid partial download,
@@ -245,7 +245,7 @@ class ModelStore internal constructor(
      * verified replacement is atomically promoted.
      */
     suspend fun ensureAvailable(
-        build: ModelBuild,
+        build: DownloadableModel,
         onProgress: (DownloadProgress) -> Unit = {},
     ): File = ensureAvailableWithTransport(
         build = build,
@@ -253,7 +253,7 @@ class ModelStore internal constructor(
     )
 
     internal suspend fun ensureAvailableWithTransport(
-        build: ModelBuild,
+        build: DownloadableModel,
         callFactory: Call.Factory = client,
         validateNetwork: () -> Unit = {},
         commitPromotion: ((() -> Unit) -> Boolean) = { promotion ->
@@ -303,7 +303,7 @@ class ModelStore internal constructor(
     }
 
     private suspend fun <T> executeCancellableCall(
-        build: ModelBuild,
+        build: DownloadableModel,
         call: Call,
         consume: suspend (Response) -> T,
     ): T = coroutineScope {
@@ -344,7 +344,7 @@ class ModelStore internal constructor(
     }
 
     private suspend fun ensureAvailableLocked(
-        build: ModelBuild,
+        build: DownloadableModel,
         callFactory: Call.Factory,
         validateNetwork: () -> Unit,
         commitPromotion: ((() -> Unit) -> Boolean),
@@ -445,7 +445,7 @@ class ModelStore internal constructor(
     }
 
     private suspend fun writeResponse(
-        build: ModelBuild,
+        build: DownloadableModel,
         part: File,
         existing: Long,
         response: Response,
@@ -557,7 +557,7 @@ class ModelStore internal constructor(
         return responsePlan
     }
 
-    private fun responsePlan(build: ModelBuild, existing: Long, response: Response): ResponsePlan {
+    private fun responsePlan(build: DownloadableModel, existing: Long, response: Response): ResponsePlan {
         if (existing > 0 && response.code == HTTP_PARTIAL_CONTENT) {
             val contentRange = parseContentRange(response.header("Content-Range"))
             if (contentRange == null ||
@@ -620,7 +620,7 @@ class ModelStore internal constructor(
     }
 
     private suspend fun verifyAndPromote(
-        build: ModelBuild,
+        build: DownloadableModel,
         part: File,
         target: File,
         onStage: (ModelStoreTransferStage) -> Unit,
@@ -664,7 +664,7 @@ class ModelStore internal constructor(
         return target
     }
 
-    private fun checkFreeSpace(build: ModelBuild) {
+    private fun checkFreeSpace(build: DownloadableModel) {
         val available = freeBytes()
         val required = requiredFreeBytes(build)
         if (available < required) {
@@ -678,7 +678,7 @@ class ModelStore internal constructor(
      * thread. Queued transfers for the same file observe the pending deletion and cancel
      * instead of downloading a replacement immediately before it is deleted.
      */
-    suspend fun delete(build: ModelBuild) {
+    suspend fun delete(build: DownloadableModel) {
         val activeJob = markDeletionPending(build.fileName)
         activeJob?.cancel(CancellationException("Model deletion requested for ${build.id}"))
         try {
@@ -760,7 +760,7 @@ class ModelStore internal constructor(
     )
 
     private suspend fun readNetworkChunk(
-        build: ModelBuild,
+        build: DownloadableModel,
         source: InputStream,
         buffer: ByteArray,
     ): Int =

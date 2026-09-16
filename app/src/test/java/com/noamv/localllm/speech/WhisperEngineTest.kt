@@ -3,6 +3,9 @@ package com.noamv.localllm.speech
 import android.content.ContextWrapper
 import java.io.File
 import java.nio.file.Files
+import com.noamv.localllm.model.ModelStore
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.After
@@ -38,6 +41,34 @@ class WhisperEngineTest {
 
         assertEquals(4, backend.threads)
         assertEquals(0.0f, backend.temperatureIncrement)
+    }
+
+    @Test
+    fun `deleting a speech model while dictation holds the engine lock fails`() = runTest {
+        val modelFile = File(tempFilesDir, "models/${SpeechModelCatalog.BASE_EN.fileName}")
+        val store = ModelStore(File(tempFilesDir, "models"))
+        val engine = WhisperEngine(
+            context = object : ContextWrapper(null) {
+                override fun getFilesDir(): File = tempFilesDir
+            },
+            native = RecordingBackend(),
+        )
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val holder = launch {
+            engine.tryWithOperationLock {
+                entered.complete(Unit)
+                release.await()
+            }
+        }
+        entered.await()
+
+        val deleted = engine.tryWithOperationLock { store.delete(SpeechModelCatalog.BASE_EN) }
+
+        assertEquals(false, deleted)
+        assertEquals(true, modelFile.exists())
+        release.complete(Unit)
+        holder.join()
     }
 
     private class RecordingBackend : WhisperBackend {

@@ -7,6 +7,7 @@ import com.noamv.localllm.service.TransferCancellationDisposition
 import com.noamv.localllm.service.shouldForcePlatformTimeoutCleanup
 import com.noamv.localllm.service.transferCancellationDisposition
 import com.noamv.localllm.service.routeModelTransferCommand
+import com.noamv.localllm.model.ModelCatalog
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -86,9 +87,7 @@ class ModelTransferSessionOwnerTest {
 
         val descriptor = ModelTransferDescriptor(
             role = ModelRole.WRITER,
-            modelId = "writer",
-            modelName = "Writer",
-            expectedBytes = 100,
+            model = ModelCatalog.E2B_GPU,
         )
         val coordinator = ModelTransferStatusCoordinator(descriptor)
         coordinator.begin(newSession.id, newSession.policy, partialBytes = 10)

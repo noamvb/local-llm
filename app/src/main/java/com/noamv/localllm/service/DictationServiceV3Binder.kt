@@ -12,6 +12,7 @@ import com.noamv.localllm.contract.v3.DictationResultFields
 import com.noamv.localllm.contract.v3.StructureRequest
 import com.noamv.localllm.contract.v3.StructureResultFields
 import com.noamv.localllm.engine.LlmEngine
+import com.noamv.localllm.speech.SpeechModelBuild
 import com.noamv.localllm.engine.StructurePrompts
 import com.noamv.localllm.engine.StructureOutputParser
 import com.noamv.localllm.contract.v3.SpeechModelCapability
@@ -37,6 +38,7 @@ internal class DictationServiceV3Binder(
     private val callerAuthorizer: (Int) -> String,
     private val engine: DictationEngine,
     private val llmEngine: LlmEngine,
+    private val isModelInstalled: (SpeechModelBuild) -> Boolean = { false },
     private val prewarmModel: () -> Unit = {},
     private val onInferenceActivity: () -> Unit = {},
     private val getCallingUid: () -> Int = { Binder.getCallingUid() },
@@ -67,8 +69,14 @@ internal class DictationServiceV3Binder(
                     DictationCapabilities.serializer(),
                     DictationCapabilities(
                         models = listOf(
-                            SpeechModelCapability(SpeechModelCatalog.BASE_EN.id, installed = false),
-                            SpeechModelCapability(SpeechModelCatalog.SMALL_EN.id, installed = true),
+                            SpeechModelCapability(
+                                SpeechModelCatalog.BASE_EN.id,
+                                installed = isModelInstalled(SpeechModelCatalog.BASE_EN),
+                            ),
+                            SpeechModelCapability(
+                                SpeechModelCatalog.SMALL_EN.id,
+                                installed = isModelInstalled(SpeechModelCatalog.SMALL_EN),
+                            ),
                         ),
                     ),
                 )

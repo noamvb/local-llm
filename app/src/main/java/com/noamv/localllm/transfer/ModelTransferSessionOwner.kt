@@ -5,6 +5,7 @@ import java.util.concurrent.atomic.AtomicLong
 internal data class ActiveTransferSession(
     val id: Long,
     val policy: TransferNetworkPolicy,
+    val modelId: String? = null,
 )
 
 internal sealed interface TransferStartDecision {
@@ -23,9 +24,12 @@ internal class ModelTransferSessionOwner {
     private val lock = Any()
     private var active: ActiveTransferSession? = null
 
-    fun start(policy: TransferNetworkPolicy): TransferStartDecision = synchronized(lock) {
+    fun start(
+        policy: TransferNetworkPolicy,
+        modelId: String? = null,
+    ): TransferStartDecision = synchronized(lock) {
         active?.let { return TransferStartDecision.Coalesced(it) }
-        val session = ActiveTransferSession(ProcessTransferSessionIds.next(), policy)
+        val session = ActiveTransferSession(ProcessTransferSessionIds.next(), policy, modelId)
         active = session
         TransferStartDecision.Started(session)
     }

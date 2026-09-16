@@ -8,6 +8,16 @@ package com.noamv.localllm.model
  */
 enum class ModelBackend { CPU, GPU, NPU }
 
+/** The common artifact metadata needed by the owner transfer pipeline. */
+interface DownloadableModel {
+    val id: String
+    val displayName: String
+    val fileName: String
+    val url: String
+    val sizeBytes: Long
+    val sha256: String
+}
+
 /**
  * A downloadable model file.
  *
@@ -15,20 +25,20 @@ enum class ModelBackend { CPU, GPU, NPU }
  * @param requiresBoard  ro.board.platform value this build requires, null if portable
  */
 data class ModelBuild(
-    val id: String,
-    val displayName: String,
+    override val id: String,
+    override val displayName: String,
     val repo: String,
-    val fileName: String,
-    val sizeBytes: Long,
-    val sha256: String,
+    override val fileName: String,
+    override val sizeBytes: Long,
+    override val sha256: String,
     val backend: ModelBackend,
     val requiresBoard: String? = null,
-) {
+) : DownloadableModel {
     /**
      * Direct download URL. These repositories are public and ungated and Gemma 4 is
      * Apache 2.0 licensed, so no HuggingFace token or licence click-through is needed.
      */
-    val url: String get() = "https://huggingface.co/$repo/resolve/main/$fileName?download=true"
+    override val url: String get() = "https://huggingface.co/$repo/resolve/main/$fileName?download=true"
 
     val sizeGb: Double get() = sizeBytes / 1_000_000_000.0
 }

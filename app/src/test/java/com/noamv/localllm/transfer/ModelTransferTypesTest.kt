@@ -5,6 +5,7 @@ import com.noamv.localllm.model.InsufficientModelStorageException
 import com.noamv.localllm.model.InvalidModelRangeException
 import com.noamv.localllm.model.ModelBackend
 import com.noamv.localllm.model.ModelBuild
+import com.noamv.localllm.model.DownloadableModel
 import com.noamv.localllm.model.ModelChecksumException
 import com.noamv.localllm.model.ModelNetworkException
 import com.noamv.localllm.model.ModelPromotionException
@@ -22,9 +23,15 @@ import java.util.concurrent.TimeUnit
 class ModelTransferTypesTest {
     private val descriptor = ModelTransferDescriptor(
         role = ModelRole.WRITER,
-        modelId = "writer-test",
-        modelName = "Writer test model",
-        expectedBytes = 1_000L,
+        model = ModelBuild(
+            id = "writer-test",
+            displayName = "Writer test model",
+            repo = "example/test",
+            fileName = "writer-test.bin",
+            sizeBytes = 1_000L,
+            sha256 = "sha256",
+            backend = ModelBackend.GPU,
+        ),
     )
 
     @Test
@@ -244,9 +251,7 @@ class ModelTransferTypesTest {
         val pending = ModelTransferStatus(
             sessionId = 1,
             descriptor = descriptor.copy(
-                modelId = "pending",
-                modelName = "Selected writer model",
-                expectedBytes = 0,
+                model = descriptor.model.copyForPending(),
             ),
             phase = ModelTransferPhase.STARTING,
         )
@@ -418,3 +423,13 @@ class ModelTransferTypesTest {
         backend = ModelBackend.GPU,
     )
 }
+
+private fun DownloadableModel.copyForPending(): ModelBuild = ModelBuild(
+    id = "pending",
+    displayName = "Selected writer model",
+    repo = "example/test",
+    fileName = fileName,
+    sizeBytes = 0L,
+    sha256 = sha256,
+    backend = ModelBackend.GPU,
+)

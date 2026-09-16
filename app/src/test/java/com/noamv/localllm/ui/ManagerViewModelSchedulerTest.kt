@@ -12,6 +12,8 @@ import com.noamv.localllm.engine.ModelNotInstalledException
 import com.noamv.localllm.engine.StructurePrompt
 import com.noamv.localllm.model.ModelCatalog
 import com.noamv.localllm.service.ModelTransferLaunchResult
+import com.noamv.localllm.service.ModelTransferCommand
+import com.noamv.localllm.speech.SpeechModelCatalog
 import com.noamv.localllm.transfer.ModelRole
 import com.noamv.localllm.transfer.ModelTransferDescriptor
 import com.noamv.localllm.transfer.ModelTransferStatus
@@ -204,6 +206,27 @@ class ManagerViewModelSchedulerTest {
         }
     }
 
+    @Test
+    fun `speech download uses the same start transfer command as Gemma`() = runTest {
+        withMainDispatcher {
+            val commands = mutableListOf<ModelTransferCommand>()
+            val viewModel = viewModel(
+                engine = FakeEngine { flowOf("unused") },
+                scheduler = InferenceScheduler(this),
+                startCommand = { command ->
+                    commands += command
+                    ModelTransferLaunchResult.STARTED
+                },
+            )
+
+            viewModel.downloadSpeechModel(SpeechModelCatalog.BASE_EN)
+
+            assertEquals(1, commands.size)
+            assertTrue(commands.single() is ModelTransferCommand.Start)
+            assertEquals(SpeechModelCatalog.BASE_EN, (commands.single() as ModelTransferCommand.Start).model)
+        }
+    }
+
     private suspend fun kotlinx.coroutines.test.TestScope.withMainDispatcher(
         block: suspend kotlinx.coroutines.test.TestScope.() -> Unit,
     ) {
@@ -221,6 +244,7 @@ class ManagerViewModelSchedulerTest {
         startOwnerTransfer: (TransferNetworkPolicy) -> ModelTransferLaunchResult = {
             ModelTransferLaunchResult.STARTED
         },
+        startCommand: ((ModelTransferCommand.Start) -> ModelTransferLaunchResult)? = null,
         prepareInstalledModel: () -> Unit = {},
     ) = ManagerViewModel(
         engine = engine,
@@ -229,13 +253,11 @@ class ManagerViewModelSchedulerTest {
             ModelTransferStatus(
                 descriptor = ModelTransferDescriptor(
                     role = ModelRole.WRITER,
-                    modelId = ModelCatalog.E2B_GPU.id,
-                    modelName = ModelCatalog.E2B_GPU.displayName,
-                    expectedBytes = ModelCatalog.E2B_GPU.sizeBytes,
+                    model = ModelCatalog.E2B_GPU,
                 ),
             ),
         ),
-        startOwnerTransfer = startOwnerTransfer,
+        startOwnerTransfer = { command -> startCommand?.invoke(command) ?: startOwnerTransfer(command.policy) },
         cancelOwnerTransfer = { true },
         prepareInstalledModel = prepareInstalledModel,
         scheduler = scheduler,

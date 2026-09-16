@@ -35,6 +35,17 @@ class WhisperEngine internal constructor(
     private var loaded: LoadedContext? = null
     private val closed = AtomicBoolean(false)
 
+    /** Runs an owner operation only when no dictation is currently using the native context. */
+    internal suspend fun tryWithOperationLock(operation: suspend () -> Unit): Boolean {
+        if (!operationLock.tryLock()) return false
+        try {
+            operation()
+            return true
+        } finally {
+            operationLock.unlock()
+        }
+    }
+
     override suspend fun transcribe(
         build: SpeechModelBuild,
         samples: FloatArray,

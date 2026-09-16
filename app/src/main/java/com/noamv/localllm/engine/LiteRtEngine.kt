@@ -20,6 +20,7 @@ import com.noamv.localllm.contract.InsightRequest
 import com.noamv.localllm.model.ModelBackend
 import com.noamv.localllm.model.ModelBuild
 import com.noamv.localllm.model.ModelCatalog
+import com.noamv.localllm.model.DownloadableModel
 import com.noamv.localllm.model.ModelStore
 import com.noamv.localllm.model.ModelStoreTransferStage
 import kotlinx.coroutines.CancellationException
@@ -112,21 +113,24 @@ internal class LiteRtEngine internal constructor(
         }
     }
 
-    override suspend fun acquirePreferredArtifact(
+    override suspend fun acquireArtifact(
+        build: DownloadableModel,
         transport: ModelAcquisitionTransport,
         onProgress: (ArtifactAcquisitionProgress) -> Unit,
         onTerminalSnapshot: (ArtifactAcquisitionByteSnapshot) -> Unit,
     ) {
         acquisitionLock.withLock {
-            val build = startupPolicy.ownerAcquisitionTarget() ?: return
-            val acquisitionId = statusCoordinator.beginAcquisition(
-                EngineStatus(
-                    state = EngineState.DOWNLOADING,
-                    modelId = build.id,
-                    detail = "Downloading ${build.displayName}",
-                    modelDownloaded = hasInstalledCandidate(),
-                ),
-            )
+            val languageBuild = build as? ModelBuild
+            val acquisitionId = languageBuild?.let {
+                statusCoordinator.beginAcquisition(
+                    EngineStatus(
+                        state = EngineState.DOWNLOADING,
+                        modelId = it.id,
+                        detail = "Downloading ${it.displayName}",
+                        modelDownloaded = hasInstalledCandidate(),
+                    ),
+                )
+            }
             try {
                 var transferredThisRunBytes = 0L
                 store.ensureAvailableWithTransport(
@@ -147,7 +151,9 @@ internal class LiteRtEngine internal constructor(
                     },
                     onProgress = { progress ->
                         transferredThisRunBytes = progress.transferredThisRunBytes
-                        statusCoordinator.publishAcquisitionProgress(acquisitionId, progress.percent)
+                        acquisitionId?.let {
+                            statusCoordinator.publishAcquisitionProgress(it, progress.percent)
+                        }
                         onProgress(
                             ArtifactAcquisitionProgress(
                                 build = build,
@@ -169,28 +175,36 @@ internal class LiteRtEngine internal constructor(
                         )
                     },
                 )
-                statusCoordinator.finishAcquisition(
-                    acquisitionId,
-                    unloadedStatus(build.id, "Downloaded; not loaded"),
-                )
+                languageBuild?.let {
+                    statusCoordinator.finishAcquisition(
+                        acquisitionId!!,
+                        unloadedStatus(it.id, "Downloaded; not loaded"),
+                    )
+                }
             } catch (cancelled: CancellationException) {
-                statusCoordinator.finishAcquisition(
-                    acquisitionId,
-                    unloadedStatus(build.id, "Download cancelled"),
-                )
+                languageBuild?.let {
+                    statusCoordinator.finishAcquisition(
+                        acquisitionId!!,
+                        unloadedStatus(it.id, "Download cancelled"),
+                    )
+                }
                 throw cancelled
             } catch (outOfMemory: OutOfMemoryError) {
-                statusCoordinator.finishAcquisition(
-                    acquisitionId,
-                    unloadedStatus(build.id, "Download interrupted by memory pressure"),
-                )
+                languageBuild?.let {
+                    statusCoordinator.finishAcquisition(
+                        acquisitionId!!,
+                        unloadedStatus(it.id, "Download interrupted by memory pressure"),
+                    )
+                }
                 throw outOfMemory
             } catch (error: Throwable) {
                 val failure = ModelAcquisitionException(build, error)
-                statusCoordinator.finishAcquisition(
-                    acquisitionId,
-                    unloadedStatus(build.id, failure.message.orEmpty()),
-                )
+                languageBuild?.let {
+                    statusCoordinator.finishAcquisition(
+                        acquisitionId!!,
+                        unloadedStatus(it.id, failure.message.orEmpty()),
+                    )
+                }
                 throw failure
             }
         }

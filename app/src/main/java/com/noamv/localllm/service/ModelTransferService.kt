@@ -13,6 +13,8 @@ import android.os.IBinder
 import android.util.Log
 import com.noamv.localllm.LocalLlmApplication
 import com.noamv.localllm.R
+import com.noamv.localllm.model.DownloadableModel
+import com.noamv.localllm.model.ModelCatalog
 import com.noamv.localllm.engine.ModelAcquisitionTransport
 import com.noamv.localllm.transfer.ActiveTransferSession
 import com.noamv.localllm.transfer.ModelRole
@@ -41,7 +43,12 @@ import kotlinx.coroutines.launch
 import okhttp3.Call
 
 internal sealed interface ModelTransferCommand {
-    data class Start(val policy: TransferNetworkPolicy) : ModelTransferCommand
+    data class Start(
+        val policy: TransferNetworkPolicy,
+        /** Present when constructed by the manager; intents carry the ID separately. */
+        val model: DownloadableModel? = null,
+        val modelId: String? = model?.id,
+    ) : ModelTransferCommand
     data object Cancel : ModelTransferCommand
     data object Invalid : ModelTransferCommand
 }
@@ -50,15 +57,17 @@ internal fun routeModelTransferCommand(
     action: String?,
     allowMeteredOnce: Boolean,
     startFlags: Int,
+    modelId: String? = null,
 ): ModelTransferCommand {
     if (startFlags and Service.START_FLAG_RETRY != 0) return ModelTransferCommand.Invalid
     return when (action) {
         ModelTransferService.ACTION_START -> ModelTransferCommand.Start(
-            if (allowMeteredOnce) {
+            policy = if (allowMeteredOnce) {
                 TransferNetworkPolicy.ALLOW_METERED_ONCE
             } else {
                 TransferNetworkPolicy.UNMETERED_WIFI
             },
+            modelId = modelId,
         )
         ModelTransferService.ACTION_CANCEL -> ModelTransferCommand.Cancel
         else -> ModelTransferCommand.Invalid
@@ -145,9 +154,10 @@ class ModelTransferService : Service() {
             action = intent?.action,
             allowMeteredOnce = intent?.getBooleanExtra(EXTRA_ALLOW_METERED_ONCE, false) == true,
             startFlags = flags,
+            modelId = intent?.getStringExtra(EXTRA_MODEL_ID),
         )
         when (command) {
-            is ModelTransferCommand.Start -> handleStart(command.policy)
+            is ModelTransferCommand.Start -> handleStart(command)
             ModelTransferCommand.Cancel -> cancelAndStop(TransferStopReason.OWNER_CANCELLED)
             ModelTransferCommand.Invalid -> if (sessions.active() == null) stopLatestStart()
         }
@@ -156,8 +166,8 @@ class ModelTransferService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun handleStart(policy: TransferNetworkPolicy) {
-        when (val decision = sessions.start(policy)) {
+    private fun handleStart(command: ModelTransferCommand.Start) {
+        when (val decision = sessions.start(command.policy, command.modelId)) {
             is TransferStartDecision.Coalesced -> {
                 // A repeated explicit start shares the current run and cannot widen its
                 // one-run network policy.
@@ -183,7 +193,9 @@ class ModelTransferService : Service() {
 
         // Installed compatible fallbacks remain the truth; a stale/repeated owner command
         // never relabels them as a completed preferred-model download.
-        val requiresAcquisition = app.beginOwnerModelTransfer(session.id, session.policy)
+        val model = app.ownerTransferModel(session.modelId)
+            ?: throw IllegalArgumentException("Unknown model transfer target")
+        val requiresAcquisition = app.beginOwnerModelTransfer(session.id, model, session.policy)
         updateForeground(app.modelTransferStatus.value)
         if (!requiresAcquisition) {
             finishServiceSession(session.id)
@@ -235,6 +247,7 @@ class ModelTransferService : Service() {
             try {
                 app.performOwnerModelTransfer(
                     sessionId = session.id,
+                    model = model,
                     transport = transport,
                 )
             } catch (_: kotlinx.coroutines.CancellationException) {
@@ -389,9 +402,7 @@ class ModelTransferService : Service() {
     private fun preflightStatus(session: ActiveTransferSession): ModelTransferStatus {
         val descriptor = ModelTransferDescriptor(
             role = ModelRole.WRITER,
-            modelId = "pending",
-            modelName = "Selected writer model",
-            expectedBytes = 0L,
+            model = ModelCatalog.E2B_GPU,
         )
         return ModelTransferStatus(
             sessionId = session.id,
@@ -510,6 +521,7 @@ class ModelTransferService : Service() {
         internal const val ACTION_START = "com.noamv.localllm.action.START_MODEL_TRANSFER"
         internal const val ACTION_CANCEL = "com.noamv.localllm.action.CANCEL_MODEL_TRANSFER"
         internal const val EXTRA_ALLOW_METERED_ONCE = "allow_metered_once"
+        internal const val EXTRA_MODEL_ID = "model_id"
         internal const val CHANNEL_ID = "model_transfer"
         internal const val NOTIFICATION_ID = 2001
         internal const val TRANSFER_DEADLINE_MILLIS = 5L * 60L * 60L * 1_000L
@@ -523,13 +535,22 @@ class ModelTransferService : Service() {
         internal fun start(
             context: Context,
             policy: TransferNetworkPolicy,
+        ): ModelTransferLaunchResult = start(
+            context,
+            ModelTransferCommand.Start(policy),
+        )
+
+        internal fun start(
+            context: Context,
+            command: ModelTransferCommand.Start,
         ): ModelTransferLaunchResult {
             val intent = Intent(context, ModelTransferService::class.java)
                 .setAction(ACTION_START)
                 .putExtra(
                     EXTRA_ALLOW_METERED_ONCE,
-                    policy == TransferNetworkPolicy.ALLOW_METERED_ONCE,
+                    command.policy == TransferNetworkPolicy.ALLOW_METERED_ONCE,
                 )
+                .putExtra(EXTRA_MODEL_ID, command.modelId)
             return try {
                 context.startForegroundService(intent)
                 ModelTransferLaunchResult.STARTED

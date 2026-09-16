@@ -1,6 +1,6 @@
 package com.noamv.localllm.engine
 
-import com.noamv.localllm.model.ModelBuild
+import com.noamv.localllm.model.DownloadableModel
 import com.noamv.localllm.transfer.TransferNetworkBlockReason
 import okhttp3.Call
 
@@ -11,7 +11,7 @@ internal enum class ArtifactAcquisitionStage {
 }
 
 internal data class ArtifactAcquisitionProgress(
-    val build: ModelBuild,
+    val build: DownloadableModel,
     val stage: ArtifactAcquisitionStage,
     val availableBytes: Long,
     val totalBytes: Long,
@@ -19,7 +19,7 @@ internal data class ArtifactAcquisitionProgress(
 )
 
 internal data class ArtifactAcquisitionByteSnapshot(
-    val build: ModelBuild,
+    val build: DownloadableModel,
     val availableBytes: Long,
     val transferredThisRunBytes: Long,
     val promotionCommitted: Boolean,
@@ -43,8 +43,9 @@ internal data class ModelAcquisitionTransport(
  * type makes a network transfer impossible to reach from those paths by accident.
  */
 internal interface ModelAcquirer {
-    /** Installs the preferred artifact only when no compatible artifact is installed. */
-    suspend fun acquirePreferredArtifact(
+    /** Installs the selected artifact through the shared ModelStore pipeline. */
+    suspend fun acquireArtifact(
+        build: DownloadableModel,
         transport: ModelAcquisitionTransport,
         onProgress: (ArtifactAcquisitionProgress) -> Unit = {},
         onTerminalSnapshot: (ArtifactAcquisitionByteSnapshot) -> Unit = {},

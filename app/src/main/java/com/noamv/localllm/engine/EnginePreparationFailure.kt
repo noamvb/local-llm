@@ -1,5 +1,6 @@
 package com.noamv.localllm.engine
 
+import com.noamv.localllm.model.DownloadableModel
 import com.noamv.localllm.model.ModelBuild
 
 /** No compatible verified artifact is installed; owner acquisition is required. */
@@ -9,7 +10,7 @@ class ModelNotInstalledException(
 
 /** Download, storage, or verification failed before a backend was initialized. */
 class ModelAcquisitionException(
-    val build: ModelBuild,
+    val build: DownloadableModel,
     cause: Throwable,
 ) : Exception("Could not acquire ${build.displayName}: ${cause.message.orEmpty()}", cause)
 
