@@ -26,6 +26,9 @@
              APK built on 2026-09-16. The debug signer lives only in src/debug and
              src/sandbox overrides of this file. -->
         <item>6d6a92b76281efdd62853e147e8bcb04852e64442f88386f92ff30b8df7408d1</item>
+        <!-- DEVELOPMENT BUILDS ONLY (this file is the src/debug and src/sandbox override):
+             Inbox as signed by this Mac's ~/.android/debug.keystore. -->
+        <item>3cbb554864c551061f38b629062ef8e3f2cf9e7673189c7354219807619146b4</item>
     </string-array>
 
     <!--
@@ -39,5 +42,6 @@
         <item>com.noamv.cannsheet.mobile|a9787249b106d98a421ed839789361a45753e367e243820d10d2f3a09708665e</item>
         <!-- Inbox release signer; see the note above. -->
         <item>com.noamv.inbox|6d6a92b76281efdd62853e147e8bcb04852e64442f88386f92ff30b8df7408d1</item>
+        <item>com.noamv.inbox|3cbb554864c551061f38b629062ef8e3f2cf9e7673189c7354219807619146b4</item>
     </string-array>
 </resources>
