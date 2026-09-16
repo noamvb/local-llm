@@ -278,3 +278,53 @@ service API versions declared v1-capable; a future version enters that set only 
 v1 compatibility is specified and tested. Adding optional fields with defaults is
 backward compatible; anything else requires a version bump and coordinated client
 support.
+
+## Dictation v3
+
+This is a separate speech-in, text-out contract. It does not change the v1 insight or v2
+assistant contracts.
+
+### AIDL
+
+```aidl
+package com.noamv.localllm.v3;
+import com.noamv.localllm.v3.IDictationCallbackV3;
+interface IDictationServiceV3 {
+    int getApiVersion();
+    String getCapabilitiesJson();
+    String transcribe(in ParcelFileDescriptor audio, String requestJson, IDictationCallbackV3 callback);
+    void cancel(String requestId);
+}
+```
+
+```aidl
+package com.noamv.localllm.v3;
+oneway interface IDictationCallbackV3 {
+    void onProgress(String requestId, int percent, String stage);
+    void onComplete(String requestId, String resultJson);
+    void onError(String requestId, int errorCode, String message, boolean retryable);
+}
+```
+
+`VERSION = 3`.
+
+Request (`requestJson`): `{"model":"whisper-base-en","language":"en","timeoutMs":30000}`
+
+- `model` is a SpeechModelCatalog id; unknown -> error 3. `language`: only `"en"`.
+- `timeoutMs` optional, default 30000, clamp 5000..120000.
+
+Capabilities (`getCapabilitiesJson`): `{"apiVersion":3,"models":[{"id":"whisper-base-en","installed":false},{"id":"whisper-small-en","installed":true}],"audio":{"format":"wav","sampleRateHz":16000,"channels":1,"bitsPerSample":16,"maxSeconds":60}}`
+
+Result (`resultJson`): `{"requestId":"<id>","text":"And so my fellow Americans, ask not what your country can do for you, ask what you can do for your country.","model":"whisper-base-en","audioSeconds":11.0,"timingsMs":{"load":0,"encode":0,"decode":0,"total":0}}`
+
+Error codes (`errorCode int`):
+
+| Code | Meaning |
+| --- | --- |
+| 1 | UNAUTHORIZED |
+| 2 | BAD_REQUEST |
+| 3 | MODEL_NOT_INSTALLED |
+| 4 | AUDIO_FORMAT (not 16 kHz mono 16-bit PCM WAV, or > 60 s) |
+| 5 | BUSY (another transcription running; retryable=true) |
+| 6 | CANCELLED |
+| 7 | ENGINE_FAILURE |

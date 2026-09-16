@@ -20,6 +20,14 @@ val hasReleaseSigning = listOf(
 android {
   namespace = "com.noamv.localllm"
   compileSdk = 36
+  ndkVersion = "29.0.14206865"
+
+  externalNativeBuild {
+    cmake {
+      path = file("src/main/cpp/CMakeLists.txt")
+      version = "4.1.2"
+    }
+  }
 
   defaultConfig {
     applicationId = "com.noamv.localllm"
@@ -41,6 +49,13 @@ android {
       // because the LiteRT-LM native libraries dominate its size.
       abiFilters += "arm64-v8a"
     }
+
+    externalNativeBuild {
+      cmake {
+        arguments += listOf("-DANDROID_STL=c++_shared")
+        cppFlags += "-std=c++17"
+      }
+    }
   }
 
   testOptions {
@@ -59,6 +74,14 @@ android {
   }
 
   buildTypes {
+    create("sandbox") {
+      initWith(getByName("debug"))
+      matchingFallbacks += listOf("debug")
+      applicationIdSuffix = ".sandbox"
+      versionNameSuffix = "-sandbox"
+      signingConfig = signingConfigs.getByName("debug")
+    }
+
     release {
       isMinifyEnabled = false
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")

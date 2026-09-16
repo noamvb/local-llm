@@ -13,6 +13,7 @@ import com.noamv.localllm.engine.ModelAcquirer
 import com.noamv.localllm.engine.ProcessWorkEpoch
 import com.noamv.localllm.engine.ModelResidencyCoordinator
 import com.noamv.localllm.engine.shouldPrewarmOnBind
+import com.noamv.localllm.speech.WhisperEngine
 import com.noamv.localllm.history.AssistantDatabase
 import com.noamv.localllm.history.AssistantHistoryRepository
 import com.noamv.localllm.model.ModelStore
@@ -48,6 +49,8 @@ import java.util.concurrent.TimeUnit
  * would make the first insight after each app switch take ten seconds.
  */
 class LocalLlmApplication : Application() {
+
+    val whisperEngine: WhisperEngine by lazy { WhisperEngine(this) }
 
     /**
      * Scope for work that has to outlive whatever screen or service binding started it.
