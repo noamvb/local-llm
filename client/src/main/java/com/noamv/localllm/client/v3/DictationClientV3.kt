@@ -117,7 +117,7 @@ class DictationClientV3(
         }
     }
 
-    suspend fun structure(text: String): StructureResultFields = withTimeout(bindTimeoutMillis) {
+    suspend fun structure(text: String): StructureResultFields = withTimeout(requestTimeoutMillis) {
         withService { service ->
             if (service.apiVersion != DictationContractV3.VERSION) {
                 throw Unavailable("Incompatible dictation API version: ${service.apiVersion}")
