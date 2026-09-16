@@ -172,6 +172,7 @@ internal class DictationServiceV3Binder(
         val job = scope.launch {
             try {
                 val raw = llmEngine.structure(StructurePrompts.forDictation(request.text, request.kinds))
+                Log.d(TAG, "structure raw requestId=$requestId chars=${raw.length} text=${raw.take(400)}")
                 val parsed = DictationContractV3.json.decodeFromString(
                     StructureResultFields.serializer(),
                     raw,
