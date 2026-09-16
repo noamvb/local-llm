@@ -5,6 +5,7 @@ import android.os.Build
 import android.os.SystemClock
 import android.util.Log
 import com.google.ai.edge.litertlm.Backend
+import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.Engine
@@ -92,9 +93,11 @@ internal class LiteRtEngine internal constructor(
     private val _timings = MutableStateFlow(EngineTimings())
     override val timings: StateFlow<EngineTimings> = _timings.asStateFlow()
 
-    private val lifecycle = EngineLifecycleCoordinator<Engine> { error ->
-        Log.w(TAG, "Engine close failed", error)
-    }
+    private val structureConversation = StructureConversationReuse<Conversation>()
+    private val lifecycle = EngineLifecycleCoordinator<Engine>(
+        onCloseFailure = { error -> Log.w(TAG, "Engine close failed", error) },
+        beforeClose = structureConversation::closeFor,
+    )
     private val acquisitionLock = Mutex()
 
     val activeBuild: ModelBuild?
@@ -388,6 +391,7 @@ internal class LiteRtEngine internal constructor(
             prepare()
             val postPrepareAt = SystemClock.elapsedRealtime()
             val result = lifecycle.use(loader = { loadFirstInstalled { _, _ -> } }) { loaded ->
+                val createConversationStartedAt = SystemClock.elapsedRealtime()
                 val config = ConversationConfig(
                     systemInstruction = Contents.of(prompt.systemInstruction),
                     enableResponseFormat = true,
@@ -402,32 +406,44 @@ internal class LiteRtEngine internal constructor(
                 val previousConstrainedDecoding = ExperimentalFlags.enableConversationConstrainedDecoding
                 ExperimentalFlags.enableConversationConstrainedDecoding = true
                 val conversation = try {
-                    loaded.handle.createConversation(config)
+                    structureConversation.getOrCreate(
+                        engine = loaded.handle,
+                        instruction = prompt.systemInstruction,
+                    ) {
+                        loaded.handle.createConversation(config)
+                    }
                 } finally {
                     ExperimentalFlags.enableConversationConstrainedDecoding = previousConstrainedDecoding
                 }
-                conversation.use { conversation ->
-                    val message = conversation.sendMessage(
-                        prompt.userMessage,
-                        responseFormat = ResponseFormat.json(prompt.schema),
+                val createConversationMs = SystemClock.elapsedRealtime() - createConversationStartedAt
+                val responseFormatStartedAt = SystemClock.elapsedRealtime()
+                val responseFormat = ResponseFormat.json(prompt.schema)
+                val responseFormatMs = SystemClock.elapsedRealtime() - responseFormatStartedAt
+                val sendMessageStartedAt = SystemClock.elapsedRealtime()
+                val message = conversation.sendMessage(
+                    prompt.userMessage,
+                    responseFormat = responseFormat,
+                )
+                val sendMessageMs = SystemClock.elapsedRealtime() - sendMessageStartedAt
+                val elapsed = SystemClock.elapsedRealtime() - startedAt
+                val prefill = SystemClock.elapsedRealtime() - postPrepareAt
+                _timings.update { timings ->
+                    timings.copy(
+                        lastTimeToFirstTokenMillis = elapsed,
+                        lastPrefillMillis = prefill,
+                        lastRequestWasWarm = warm,
+                        lastRequestDownloaded = false,
                     )
-                    val elapsed = SystemClock.elapsedRealtime() - startedAt
-                    val prefill = SystemClock.elapsedRealtime() - postPrepareAt
-                    _timings.update { timings ->
-                        timings.copy(
-                            lastTimeToFirstTokenMillis = elapsed,
-                            lastPrefillMillis = prefill,
-                            lastRequestWasWarm = warm,
-                            lastRequestDownloaded = false,
-                        )
-                    }
-                    Log.i(
-                        TAG,
-                        "structure warm=$warm downloaded=false " +
-                            "totalMs=$elapsed prefillMs=$prefill model=${loaded.build.id}",
-                    )
-                    message.toString()
                 }
+                Log.i(
+                    TAG,
+                    "structure warm=$warm downloaded=false " +
+                        "totalMs=$elapsed prefillMs=$prefill " +
+                        "createConversationMs=$createConversationMs " +
+                        "responseFormatMs=$responseFormatMs sendMessageMs=$sendMessageMs " +
+                        "model=${loaded.build.id}",
+                )
+                message.toString()
             }
             return result
         } catch (outOfMemory: OutOfMemoryError) {
