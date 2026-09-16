@@ -662,3 +662,16 @@ constraint is built into the contract rather than left to callers' discretion.
    as inert escaped text (excluded from future context and notifications).
 7. **Model Manifest & Updates:** Manifest checks occur passively on Wi-Fi with an update badge
    in Manager UI; downloads start only on explicit user tap.
+
+## 2026-09-16 — Dictation is a separate v3 contract, not an assistant task
+
+**Why.** Dictation is speech in, text out: a client sends a recorded audio file and the
+device returns an English transcript. The facts-not-rows rule is about narration and stays
+intact for v1/v2; it does not describe this distinct speech recognition job.
+
+**What it costs.** This is the first native code in the app, a 24 MB `.so`, a `sandbox`
+build type, and a `${applicationId}` permission rename so the sandbox can install beside
+the release app without redefining its permission.
+
+**Alternatives rejected.** whisper in the client app would break one-copy-of-each-model;
+Android `SpeechRecognizer` is cloud on Samsung by default.

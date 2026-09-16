@@ -278,3 +278,75 @@ service API versions declared v1-capable; a future version enters that set only 
 v1 compatibility is specified and tested. Adding optional fields with defaults is
 backward compatible; anything else requires a version bump and coordinated client
 support.
+
+## Dictation v3
+
+This is a separate speech-in, text-out contract. It does not change the v1 insight or v2
+assistant contracts.
+
+### AIDL
+
+```aidl
+package com.noamv.localllm.v3;
+import com.noamv.localllm.v3.IDictationCallbackV3;
+interface IDictationServiceV3 {
+    int getApiVersion();
+    String getCapabilitiesJson();
+    String transcribe(in ParcelFileDescriptor audio, String requestJson, IDictationCallbackV3 callback);
+    String structure(String requestJson, IDictationCallbackV3 callback);
+    void cancel(String requestId);
+}
+```
+
+```aidl
+package com.noamv.localllm.v3;
+oneway interface IDictationCallbackV3 {
+    void onProgress(String requestId, int percent, String stage);
+    void onComplete(String requestId, String resultJson);
+    void onError(String requestId, int errorCode, String message, boolean retryable);
+}
+```
+
+`VERSION = 3`.
+
+Request (`requestJson`): `{"model":"whisper-base-en","language":"en","timeoutMs":30000}`
+
+- `model` is a SpeechModelCatalog id; unknown -> error 3. `language`: only `"en"`.
+- `timeoutMs` optional, default 30000, clamp 5000..120000.
+
+Capabilities (`getCapabilitiesJson`): `{"apiVersion":3,"models":[{"id":"whisper-base-en","installed":false},{"id":"whisper-small-en","installed":true}],"audio":{"format":"wav","sampleRateHz":16000,"channels":1,"bitsPerSample":16,"maxSeconds":60}}`
+
+Result (`resultJson`): `{"requestId":"<id>","text":"And so my fellow Americans, ask not what your country can do for you, ask what you can do for your country.","model":"whisper-base-en","audioSeconds":11.0,"timingsMs":{"load":0,"encode":0,"decode":0,"total":0}}`
+
+### Structure
+
+`structure(requestJson, callback)` classifies one dictated sentence and returns a small JSON
+object using the resident Gemma model. The request is
+`{"text":"remind me to buy milk tomorrow","kinds":["todo","note"]}`. `text` must be
+non-empty and at most 500 characters. `kinds` is optional and defaults to `["todo","note"]`;
+only `todo` and `note` are allowed.
+
+The result is `{"requestId":"<id>","kind":"todo","text":"Buy milk tomorrow","confidence":0.92,"model":"gemma-4-E2B-it-gpu","timingsMs":{"total":0}}`.
+`kind` is one of the requested kinds. `text` is the cleaned item: an imperative for a todo,
+or the sentence as spoken for a note, with filler removed and the first letter capitalised.
+`confidence` is in the range 0.0..1.0 and is rounded to two decimals.
+
+The schema handed to constrained decoding is
+`{"type":"object","properties":{"kind":{"type":"string","enum":["todo","note"]},"text":{"type":"string"},"confidence":{"type":"number","minimum":0,"maximum":1}},"required":["kind","text","confidence"]}`.
+Constrained decoding: the service passes `STRUCTURE_SCHEMA` to LiteRT-LM's
+`ResponseFormat`; if strict decoding fails, the service extracts the first balanced JSON object,
+decodes it while ignoring unknown keys, and normalizes `decision` to `kind`,
+`rewritten_text`/`rewrite`/`item` to `text`, and `score` to `confidence`. A client never receives
+non-JSON, and an unparsable reply or a result whose `kind` is not requested is error 7.
+
+Error codes (`errorCode int`):
+
+| Code | Meaning |
+| --- | --- |
+| 1 | UNAUTHORIZED |
+| 2 | BAD_REQUEST |
+| 3 | MODEL_NOT_INSTALLED |
+| 4 | AUDIO_FORMAT (not 16 kHz mono 16-bit PCM WAV, or > 60 s) |
+| 5 | BUSY (another transcription running; retryable=true) |
+| 6 | CANCELLED |
+| 7 | ENGINE_FAILURE |

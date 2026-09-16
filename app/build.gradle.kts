@@ -20,6 +20,14 @@ val hasReleaseSigning = listOf(
 android {
   namespace = "com.noamv.localllm"
   compileSdk = 36
+  ndkVersion = "29.0.14206865"
+
+  externalNativeBuild {
+    cmake {
+      path = file("src/main/cpp/CMakeLists.txt")
+      version = "4.1.2"
+    }
+  }
 
   defaultConfig {
     applicationId = "com.noamv.localllm"
@@ -27,8 +35,8 @@ android {
     // knownSigner permission flag used to gate the inference service requires API 31.
     minSdk = 31
     targetSdk = 36
-    versionCode = 10
-    versionName = "0.2.3"
+    versionCode = 11
+    versionName = "0.3.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -40,6 +48,17 @@ android {
       // The only real target is an arm64 phone. Shipping a single ABI keeps the APK small
       // because the LiteRT-LM native libraries dominate its size.
       abiFilters += "arm64-v8a"
+    }
+
+    externalNativeBuild {
+      cmake {
+        // whisper at -O0 is ~30x slower than -O3 (measured 16 Sep 2026: 40 s vs 1.4 s for
+        // 3 s of audio on a Z Fold 7), so the native library is always an optimised build,
+        // debug and sandbox variants included. AGP's own -DCMAKE_BUILD_TYPE comes first
+        // and this later argument wins.
+        arguments += listOf("-DANDROID_STL=c++_shared", "-DCMAKE_BUILD_TYPE=Release")
+        cppFlags += "-std=c++17"
+      }
     }
   }
 
@@ -59,6 +78,14 @@ android {
   }
 
   buildTypes {
+    create("sandbox") {
+      initWith(getByName("debug"))
+      matchingFallbacks += listOf("debug")
+      applicationIdSuffix = ".sandbox"
+      versionNameSuffix = "-sandbox"
+      signingConfig = signingConfigs.getByName("debug")
+    }
+
     release {
       isMinifyEnabled = false
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")

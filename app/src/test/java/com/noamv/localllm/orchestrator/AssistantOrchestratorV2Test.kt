@@ -7,6 +7,7 @@ import com.noamv.localllm.contract.v2.*
 import com.noamv.localllm.engine.EngineTimings
 import com.noamv.localllm.engine.LlmEngine
 import com.noamv.localllm.engine.ModelResidencyCoordinator
+import com.noamv.localllm.engine.StructurePrompt
 import com.noamv.localllm.history.AssistantHistoryRepository
 import com.noamv.localllm.history.FakeAssistantHistoryDao
 import com.noamv.localllm.privacy.AssistantAccessPolicy
@@ -537,6 +538,8 @@ class FakeOrchestratorEngine(
 
     override suspend fun prepare(onProgress: (Int, String) -> Unit) = Unit
     override fun generate(request: InsightRequest): Flow<String> = flowOf(textToGenerate)
+    override suspend fun structure(prompt: StructurePrompt): String =
+        throw UnsupportedOperationException("structure is not used by this fixture")
     override suspend fun unload() = Unit
     override fun close() = Unit
 }

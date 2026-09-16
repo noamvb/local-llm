@@ -63,6 +63,19 @@ class InferenceService : Service() {
         )
     }
 
+    private val dictationBinder by lazy {
+        val app = application as LocalLlmApplication
+        DictationServiceV3Binder(
+            scope = serviceScope,
+            callerAuthorizer = callerAuthorizer::enforceAuthorizedCaller,
+            engine = app.whisperEngine,
+            llmEngine = app.engine,
+            isModelInstalled = app.modelStore::isInstalled,
+            prewarmModel = app::prewarmModel,
+            onInferenceActivity = app::recordInferenceActivity,
+        )
+    }
+
     override fun onCreate() {
         super.onCreate()
         callerAuthorizer = CallerAuthorizer(this)
@@ -72,10 +85,10 @@ class InferenceService : Service() {
     // Binding proves only that the manifest permission gate passed. Exact package-plus-signer
     // authorization happens on each Binder transaction, so a simple bind must stay inert.
     override fun onBind(intent: Intent?): IBinder {
-        return if (intent?.action == ACTION_BIND_ASSISTANT_V2) {
-            v2Binder
-        } else {
-            binder
+        return when (intent?.action) {
+            ACTION_BIND_ASSISTANT_V2 -> v2Binder
+            ACTION_BIND_DICTATION_V3 -> dictationBinder
+            else -> binder
         }
     }
 
@@ -422,6 +435,7 @@ class InferenceService : Service() {
 
     companion object {
         const val ACTION_BIND_ASSISTANT_V2 = "com.noamv.localllm.v2.action.BIND_ASSISTANT"
+        const val ACTION_BIND_DICTATION_V3 = "com.noamv.localllm.v3.action.BIND_DICTATION"
         private const val TAG = "InferenceService"
         private const val CHANNEL_ID = "engine"
         private const val STAGE_QUEUED = "queued"

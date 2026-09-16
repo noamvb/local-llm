@@ -34,6 +34,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
@@ -41,9 +42,12 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.noamv.localllm.contract.EngineState
+import com.noamv.localllm.R
+import com.noamv.localllm.model.DownloadableModel
 import com.noamv.localllm.ui.theme.LocalLlmTheme
 import com.noamv.localllm.ui.theme.ThemeMode
 import com.noamv.localllm.ui.theme.resolveDarkTheme
+import kotlin.math.roundToLong
 
 /**
  * The manager UI. This app has no chat surface by design: it exists to hold the model
@@ -112,12 +116,14 @@ private fun ManagerScreen(
     val transfer by viewModel.transferStatus.collectAsStateWithLifecycle()
     val transferCommandMessage by viewModel.transferCommandMessage.collectAsStateWithLifecycle()
     val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
+    val speechModels by viewModel.speechModels.collectAsStateWithLifecycle()
 
     val masterAssistantEnabled by viewModel.masterAssistantEnabled.collectAsStateWithLifecycle()
     val cannsheetAccessEnabled by viewModel.cannsheetAccessEnabled.collectAsStateWithLifecycle()
     val poopScheduleAccessEnabled by viewModel.poopScheduleAccessEnabled.collectAsStateWithLifecycle()
 
     var confirmMetered by remember { mutableStateOf(false) }
+    var meteredModel by remember { mutableStateOf<DownloadableModel?>(null) }
     var confirmClearHistory by remember { mutableStateOf(false) }
     var historyClearedMessage by remember { mutableStateOf(false) }
 
@@ -214,6 +220,56 @@ private fun ManagerScreen(
         selfTest?.let {
             Text("Self-test output", style = MaterialTheme.typography.titleMedium)
             Text(it, style = MaterialTheme.typography.bodyMedium)
+        }
+
+        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+        Text(stringResource(R.string.speech_models_title), style = MaterialTheme.typography.titleMedium)
+        Text(stringResource(R.string.speech_models_description), style = MaterialTheme.typography.bodySmall)
+        speechModels.forEach { row ->
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(row.build.displayName, style = MaterialTheme.typography.bodyLarge)
+                Text(stringResource(R.string.speech_model_size, speechSizeMb(row.build.sizeBytes)))
+                Text(
+                    when (row.state) {
+                        ManagerViewModel.SpeechModelState.INSTALLED ->
+                            stringResource(R.string.speech_model_installed)
+                        ManagerViewModel.SpeechModelState.NOT_INSTALLED ->
+                            stringResource(R.string.speech_model_not_installed)
+                        ManagerViewModel.SpeechModelState.DOWNLOADING ->
+                            stringResource(R.string.speech_model_downloading, row.percent)
+                        ManagerViewModel.SpeechModelState.VERIFYING ->
+                            stringResource(R.string.speech_model_verifying)
+                    },
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (row.state == ManagerViewModel.SpeechModelState.INSTALLED) {
+                        OutlinedButton(onClick = { viewModel.deleteSpeechModel(row.build) }) {
+                            Text(stringResource(R.string.speech_model_delete))
+                        }
+                    } else {
+                        Button(
+                            onClick = {
+                                onRequestNotificationPermission()
+                                viewModel.downloadSpeechModel(row.build)
+                            },
+                            enabled = !transfer.isActive,
+                        ) {
+                            Text(stringResource(R.string.speech_model_download))
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                onRequestNotificationPermission()
+                                meteredModel = row.build
+                                confirmMetered = true
+                            },
+                            enabled = !transfer.isActive,
+                        ) {
+                            Text(stringResource(R.string.speech_model_use_metered))
+                        }
+                    }
+                }
+            }
         }
 
         HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
@@ -362,7 +418,10 @@ private fun ManagerScreen(
 
     if (confirmMetered) {
         AlertDialog(
-            onDismissRequest = { confirmMetered = false },
+            onDismissRequest = {
+                confirmMetered = false
+                meteredModel = null
+            },
             title = { Text("Use mobile or metered data once?") },
             text = {
                 Text(
@@ -373,13 +432,17 @@ private fun ManagerScreen(
             confirmButton = {
                 Button(onClick = {
                     confirmMetered = false
-                    viewModel.prepareOnMeteredNetworkOnce()
+                    viewModel.prepareOnMeteredNetworkOnce(meteredModel ?: viewModel.modelBuild)
+                    meteredModel = null
                 }) {
                     Text("Use once")
                 }
             },
             dismissButton = {
-                OutlinedButton(onClick = { confirmMetered = false }) {
+                OutlinedButton(onClick = {
+                    confirmMetered = false
+                    meteredModel = null
+                }) {
                     Text("Keep Wi-Fi only")
                 }
             },
@@ -419,3 +482,6 @@ private fun ManagerScreen(
         )
     }
 }
+
+private fun speechSizeMb(sizeBytes: Long): Long =
+    (sizeBytes / 1_000_000.0).roundToLong().coerceAtLeast(1L)

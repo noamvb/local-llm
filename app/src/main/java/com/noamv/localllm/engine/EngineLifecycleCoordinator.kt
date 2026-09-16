@@ -37,6 +37,7 @@ internal data class LoadedEngine<T : AutoCloseable>(
  */
 internal class EngineLifecycleCoordinator<T : AutoCloseable>(
     private val onCloseFailure: (Throwable) -> Unit = {},
+    private val beforeClose: (T) -> Unit = {},
 ) {
     private val operationLock = Mutex()
 
@@ -108,6 +109,8 @@ internal class EngineLifecycleCoordinator<T : AutoCloseable>(
         // a handle that later code mistakes for usable.
         loaded = null
         try {
+            runCatching { beforeClose(current.handle) }
+                .onFailure(onCloseFailure)
             current.handle.close()
         } catch (error: Throwable) {
             onCloseFailure(error)

@@ -5,10 +5,14 @@ import android.os.Build
 import android.os.SystemClock
 import android.util.Log
 import com.google.ai.edge.litertlm.Backend
+import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.ExperimentalApi
+import com.google.ai.edge.litertlm.ExperimentalFlags
+import com.google.ai.edge.litertlm.ResponseFormat
 import com.google.ai.edge.litertlm.SamplerConfig
 import com.noamv.localllm.contract.EngineState
 import com.noamv.localllm.contract.EngineStatus
@@ -16,6 +20,7 @@ import com.noamv.localllm.contract.InsightRequest
 import com.noamv.localllm.model.ModelBackend
 import com.noamv.localllm.model.ModelBuild
 import com.noamv.localllm.model.ModelCatalog
+import com.noamv.localllm.model.DownloadableModel
 import com.noamv.localllm.model.ModelStore
 import com.noamv.localllm.model.ModelStoreTransferStage
 import kotlinx.coroutines.CancellationException
@@ -89,9 +94,11 @@ internal class LiteRtEngine internal constructor(
     private val _timings = MutableStateFlow(EngineTimings())
     override val timings: StateFlow<EngineTimings> = _timings.asStateFlow()
 
-    private val lifecycle = EngineLifecycleCoordinator<Engine> { error ->
-        Log.w(TAG, "Engine close failed", error)
-    }
+    private val structureConversation = StructureConversationReuse<Conversation>()
+    private val lifecycle = EngineLifecycleCoordinator<Engine>(
+        onCloseFailure = { error -> Log.w(TAG, "Engine close failed", error) },
+        beforeClose = structureConversation::closeFor,
+    )
     private val acquisitionLock = Mutex()
 
     val activeBuild: ModelBuild?
@@ -106,21 +113,24 @@ internal class LiteRtEngine internal constructor(
         }
     }
 
-    override suspend fun acquirePreferredArtifact(
+    override suspend fun acquireArtifact(
+        build: DownloadableModel,
         transport: ModelAcquisitionTransport,
         onProgress: (ArtifactAcquisitionProgress) -> Unit,
         onTerminalSnapshot: (ArtifactAcquisitionByteSnapshot) -> Unit,
     ) {
         acquisitionLock.withLock {
-            val build = startupPolicy.ownerAcquisitionTarget() ?: return
-            val acquisitionId = statusCoordinator.beginAcquisition(
-                EngineStatus(
-                    state = EngineState.DOWNLOADING,
-                    modelId = build.id,
-                    detail = "Downloading ${build.displayName}",
-                    modelDownloaded = hasInstalledCandidate(),
-                ),
-            )
+            val languageBuild = build as? ModelBuild
+            val acquisitionId = languageBuild?.let {
+                statusCoordinator.beginAcquisition(
+                    EngineStatus(
+                        state = EngineState.DOWNLOADING,
+                        modelId = it.id,
+                        detail = "Downloading ${it.displayName}",
+                        modelDownloaded = hasInstalledCandidate(),
+                    ),
+                )
+            }
             try {
                 var transferredThisRunBytes = 0L
                 store.ensureAvailableWithTransport(
@@ -141,7 +151,9 @@ internal class LiteRtEngine internal constructor(
                     },
                     onProgress = { progress ->
                         transferredThisRunBytes = progress.transferredThisRunBytes
-                        statusCoordinator.publishAcquisitionProgress(acquisitionId, progress.percent)
+                        acquisitionId?.let {
+                            statusCoordinator.publishAcquisitionProgress(it, progress.percent)
+                        }
                         onProgress(
                             ArtifactAcquisitionProgress(
                                 build = build,
@@ -163,28 +175,36 @@ internal class LiteRtEngine internal constructor(
                         )
                     },
                 )
-                statusCoordinator.finishAcquisition(
-                    acquisitionId,
-                    unloadedStatus(build.id, "Downloaded; not loaded"),
-                )
+                languageBuild?.let {
+                    statusCoordinator.finishAcquisition(
+                        acquisitionId!!,
+                        unloadedStatus(it.id, "Downloaded; not loaded"),
+                    )
+                }
             } catch (cancelled: CancellationException) {
-                statusCoordinator.finishAcquisition(
-                    acquisitionId,
-                    unloadedStatus(build.id, "Download cancelled"),
-                )
+                languageBuild?.let {
+                    statusCoordinator.finishAcquisition(
+                        acquisitionId!!,
+                        unloadedStatus(it.id, "Download cancelled"),
+                    )
+                }
                 throw cancelled
             } catch (outOfMemory: OutOfMemoryError) {
-                statusCoordinator.finishAcquisition(
-                    acquisitionId,
-                    unloadedStatus(build.id, "Download interrupted by memory pressure"),
-                )
+                languageBuild?.let {
+                    statusCoordinator.finishAcquisition(
+                        acquisitionId!!,
+                        unloadedStatus(it.id, "Download interrupted by memory pressure"),
+                    )
+                }
                 throw outOfMemory
             } catch (error: Throwable) {
                 val failure = ModelAcquisitionException(build, error)
-                statusCoordinator.finishAcquisition(
-                    acquisitionId,
-                    unloadedStatus(build.id, failure.message.orEmpty()),
-                )
+                languageBuild?.let {
+                    statusCoordinator.finishAcquisition(
+                        acquisitionId!!,
+                        unloadedStatus(it.id, failure.message.orEmpty()),
+                    )
+                }
                 throw failure
             }
         }
@@ -376,6 +396,75 @@ internal class LiteRtEngine internal constructor(
             throw outOfMemory
         }
     }.flowOn(Dispatchers.IO)
+
+    @OptIn(ExperimentalApi::class)
+    override suspend fun structure(prompt: StructurePrompt): String {
+        val startedAt = SystemClock.elapsedRealtime()
+        val warm = lifecycle.isReady
+        try {
+            prepare()
+            val postPrepareAt = SystemClock.elapsedRealtime()
+            val result = lifecycle.use(loader = { loadFirstInstalled { _, _ -> } }) { loaded ->
+                val createConversationStartedAt = SystemClock.elapsedRealtime()
+                val config = ConversationConfig(
+                    systemInstruction = Contents.of(prompt.systemInstruction),
+                    enableResponseFormat = true,
+                    maxOutputToken = 96,
+                    samplerConfig = SamplerConfig(topK = 1, topP = 1.0, temperature = 0.0),
+                )
+                // LiteRT-LM v0.16.1 Engine.kt:136-156 passes
+                // ExperimentalFlags.enableConversationConstrainedDecoding into the native
+                // conversation, while ExperimentalFlags.kt:44-50 defaults it to false.
+                // ResponseFormat.kt:33-44 confirms that json(String) expects a JSON Schema,
+                // and Conversation.kt:119-143 passes the response format on sendMessage.
+                val previousConstrainedDecoding = ExperimentalFlags.enableConversationConstrainedDecoding
+                ExperimentalFlags.enableConversationConstrainedDecoding = true
+                val conversation = try {
+                    structureConversation.getOrCreate(
+                        engine = loaded.handle,
+                        instruction = prompt.systemInstruction,
+                    ) {
+                        loaded.handle.createConversation(config)
+                    }
+                } finally {
+                    ExperimentalFlags.enableConversationConstrainedDecoding = previousConstrainedDecoding
+                }
+                val createConversationMs = SystemClock.elapsedRealtime() - createConversationStartedAt
+                val responseFormatStartedAt = SystemClock.elapsedRealtime()
+                val responseFormat = ResponseFormat.json(prompt.schema)
+                val responseFormatMs = SystemClock.elapsedRealtime() - responseFormatStartedAt
+                val sendMessageStartedAt = SystemClock.elapsedRealtime()
+                val message = conversation.sendMessage(
+                    prompt.userMessage,
+                    responseFormat = responseFormat,
+                )
+                val sendMessageMs = SystemClock.elapsedRealtime() - sendMessageStartedAt
+                val elapsed = SystemClock.elapsedRealtime() - startedAt
+                val prefill = SystemClock.elapsedRealtime() - postPrepareAt
+                _timings.update { timings ->
+                    timings.copy(
+                        lastTimeToFirstTokenMillis = elapsed,
+                        lastPrefillMillis = prefill,
+                        lastRequestWasWarm = warm,
+                        lastRequestDownloaded = false,
+                    )
+                }
+                Log.i(
+                    TAG,
+                    "structure warm=$warm downloaded=false " +
+                        "totalMs=$elapsed prefillMs=$prefill " +
+                        "createConversationMs=$createConversationMs " +
+                        "responseFormatMs=$responseFormatMs sendMessageMs=$sendMessageMs " +
+                        "model=${loaded.build.id}",
+                )
+                message.toString()
+            }
+            return result
+        } catch (outOfMemory: OutOfMemoryError) {
+            publishOutOfMemory(status.value.modelId)
+            throw outOfMemory
+        }
+    }
 
     override suspend fun unload() {
         val previousBuild = activeBuild ?: startupCandidates().firstOrNull(store::isInstalled)

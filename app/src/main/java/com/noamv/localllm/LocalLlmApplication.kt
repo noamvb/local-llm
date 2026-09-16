@@ -1,6 +1,7 @@
 package com.noamv.localllm
 
 import android.app.Application
+import android.content.ComponentCallbacks2
 import android.net.Network
 import android.util.Log
 import com.noamv.localllm.engine.ArtifactAcquisitionStage
@@ -13,8 +14,13 @@ import com.noamv.localllm.engine.ModelAcquirer
 import com.noamv.localllm.engine.ProcessWorkEpoch
 import com.noamv.localllm.engine.ModelResidencyCoordinator
 import com.noamv.localllm.engine.shouldPrewarmOnBind
+import com.noamv.localllm.speech.WhisperEngine
+import com.noamv.localllm.speech.SpeechModelBuild
+import com.noamv.localllm.speech.SpeechModelCatalog
 import com.noamv.localllm.history.AssistantDatabase
 import com.noamv.localllm.history.AssistantHistoryRepository
+import com.noamv.localllm.model.DownloadableModel
+import com.noamv.localllm.model.ModelCatalog
 import com.noamv.localllm.model.ModelStore
 import com.noamv.localllm.orchestrator.AssistantOrchestratorV2
 import com.noamv.localllm.privacy.AssistantAccessPolicy
@@ -48,6 +54,8 @@ import java.util.concurrent.TimeUnit
  * would make the first insight after each app switch take ten seconds.
  */
 class LocalLlmApplication : Application() {
+
+    val whisperEngine: WhisperEngine by lazy { WhisperEngine(this) }
 
     /**
      * Scope for work that has to outlive whatever screen or service binding started it.
@@ -125,9 +133,7 @@ class LocalLlmApplication : Application() {
         ModelTransferStatusCoordinator(
             ModelTransferDescriptor(
                 role = ModelRole.WRITER,
-                modelId = preferredBuild.id,
-                modelName = preferredBuild.displayName,
-                expectedBytes = preferredBuild.sizeBytes,
+                model = preferredBuild,
             ),
         )
     }
@@ -188,43 +194,50 @@ class LocalLlmApplication : Application() {
      */
     internal fun beginOwnerModelTransfer(
         sessionId: Long,
+        model: DownloadableModel,
         policy: TransferNetworkPolicy,
     ): Boolean {
-        val engineStatus = engine.status.value
-        val selectedBuild = if (engineStatus.modelDownloaded) {
-            engineStatus.modelId?.let(com.noamv.localllm.model.ModelCatalog::byId)
-                ?: preferredBuild
-        } else {
-            preferredBuild
-        }
         transferStatusCoordinator.begin(
             sessionId = sessionId,
             policy = policy,
             activeDescriptor = ModelTransferDescriptor(
-                role = ModelRole.WRITER,
-                modelId = selectedBuild.id,
-                modelName = selectedBuild.displayName,
-                expectedBytes = selectedBuild.sizeBytes,
+                role = if (model is SpeechModelBuild) ModelRole.SPEECH else ModelRole.WRITER,
+                model = model,
             ),
-            partialBytes = modelStore.partialBytes(selectedBuild),
+            partialBytes = modelStore.partialBytes(model),
         )
-        if (engineStatus.modelDownloaded) {
+        if (modelStore.isInstalled(model)) {
             transferStatusCoordinator.publish(
                 sessionId = sessionId,
                 phase = ModelTransferPhase.COMPLETED,
-                availableBytes = selectedBuild.sizeBytes,
+                availableBytes = model.sizeBytes,
             )
             return false
         }
         return true
     }
 
+    internal fun ownerTransferModel(modelId: String?): DownloadableModel? =
+        if (modelId == null) {
+            preferredBuild
+        } else {
+            ModelCatalog.byId(modelId) ?: SpeechModelCatalog.byId(modelId)
+        }
+
+    internal suspend fun deleteSpeechModel(build: SpeechModelBuild): Boolean {
+        return whisperEngine.tryWithOperationLock {
+            modelStore.delete(build)
+        }
+    }
+
     internal suspend fun performOwnerModelTransfer(
         sessionId: Long,
+        model: DownloadableModel,
         transport: ModelAcquisitionTransport,
     ) {
         try {
-            modelAcquirer.acquirePreferredArtifact(
+            modelAcquirer.acquireArtifact(
+                build = model,
                 transport = transport,
                 onProgress = { progress ->
                     transferStatusCoordinator.publish(
@@ -316,7 +329,7 @@ class LocalLlmApplication : Application() {
     @Suppress("DEPRECATION")
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        if (level < TRIM_MEMORY_RUNNING_CRITICAL) return
+        if (!shouldUnloadForMemoryTrim(level)) return
 
         // The service-owned transfer Job is cancelled synchronously through its registry;
         // ModelStore then retains safely written partial bytes. Native generation itself
@@ -332,3 +345,7 @@ class LocalLlmApplication : Application() {
         private const val TAG = "LocalLlmApplication"
     }
 }
+
+internal fun shouldUnloadForMemoryTrim(level: Int): Boolean =
+    level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL ||
+        level >= ComponentCallbacks2.TRIM_MEMORY_MODERATE

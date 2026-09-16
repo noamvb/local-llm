@@ -16,6 +16,7 @@ import com.noamv.localllm.model.ModelStore
 import com.noamv.localllm.model.ModelStoreTransferStage
 import com.noamv.localllm.model.ModelStorageException
 import com.noamv.localllm.model.ModelTransferByteSnapshot
+import com.noamv.localllm.speech.SpeechModelCatalog
 import com.noamv.localllm.transfer.PromotionCommitArbiter
 import com.noamv.localllm.transfer.PromotionCommitState
 import kotlinx.coroutines.CancellationException
@@ -78,6 +79,78 @@ class ModelStoreTest {
     )
 
     private val partFile: File get() = File(temporaryFolder.root, "${build.fileName}.part")
+
+    private val speechBuild = SpeechModelCatalog.BASE_EN.copy(
+        sizeBytes = payload.size.toLong(),
+        sha256 = payload.sha256(),
+    )
+
+    private val speechPartFile: File
+        get() = File(temporaryFolder.root, "${speechBuild.fileName}.part")
+
+    @Test
+    fun `a speech model download verifies and promotes through the shared store`() = runTest {
+        val store = ModelStore(temporaryFolder.root, clientServing(payload))
+
+        val file = store.ensureAvailable(speechBuild)
+
+        assertTrue(store.isInstalled(speechBuild))
+        assertEquals(payload.size.toLong(), file.length())
+        assertFalse(speechPartFile.exists())
+    }
+
+    @Test
+    fun `a speech model with the wrong sha256 is rejected and not promoted`() = runTest {
+        val wrongSha = speechBuild.copy(sha256 = "0".repeat(64))
+        val store = ModelStore(temporaryFolder.root, clientServing(payload))
+
+        val failure = runCatching { store.ensureAvailable(wrongSha) }.exceptionOrNull()
+
+        assertTrue(failure is ModelChecksumException)
+        assertFalse("a checksum failure must not promote the final file", store.fileFor(wrongSha).exists())
+        assertFalse(speechPartFile.exists())
+    }
+
+    @Test
+    fun `a speech model resumes from its part file`() = runTest {
+        val prefixBytes = 16 * 1024
+        speechPartFile.writeBytes(payload.copyOf(prefixBytes))
+        val requests = mutableListOf<Request>()
+        val store = ModelStore(
+            temporaryFolder.root,
+            scriptedClient(requests) { request, _ ->
+                response(
+                    request = request,
+                    code = 206,
+                    body = payload.copyOfRange(prefixBytes, payload.size),
+                    contentRange = "bytes $prefixBytes-${payload.lastIndex}/${payload.size}",
+                )
+            },
+        )
+
+        val file = store.ensureAvailable(speechBuild)
+
+        assertEquals(listOf("bytes=$prefixBytes-"), requests.map { it.header("Range") })
+        assertEquals(payload.toList(), file.readBytes().toList())
+        assertTrue(store.isInstalled(speechBuild))
+    }
+
+    @Test
+    fun `pruneExcept keeps speech model files and their partials`() = runTest {
+        val store = ModelStore(temporaryFolder.root, clientServing(payload))
+        store.ensureAvailable(build)
+        val whisper = File(temporaryFolder.root, "ggml-base.en.bin").apply { writeBytes(ByteArray(16)) }
+        val whisperPart = File(temporaryFolder.root, "ggml-small.en.bin.part").apply { writeBytes(ByteArray(8)) }
+        val stranded = File(temporaryFolder.root, "gemma-old.litertlm").apply { writeBytes(ByteArray(32)) }
+
+        val reclaimed = store.pruneExcept(build)
+
+        assertEquals(32L, reclaimed)
+        assertTrue("speech model must survive the prune", whisper.exists())
+        assertTrue("speech partial must survive the prune", whisperPart.exists())
+        assertFalse("the stranded language model must be pruned", stranded.exists())
+        assertTrue(store.isInstalled(build))
+    }
 
     @Test
     fun `a completed download verifies and installs`() = runTest {

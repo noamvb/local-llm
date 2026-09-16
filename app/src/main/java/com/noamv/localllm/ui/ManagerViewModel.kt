@@ -23,8 +23,13 @@ import com.noamv.localllm.engine.LiteRtEngine
 import com.noamv.localllm.engine.LlmEngine
 import com.noamv.localllm.model.ModelBuild
 import com.noamv.localllm.model.ModelCatalog
+import com.noamv.localllm.model.DownloadableModel
 import com.noamv.localllm.service.ModelTransferLaunchResult
+import com.noamv.localllm.service.ModelTransferCommand
 import com.noamv.localllm.service.ModelTransferService
+import com.noamv.localllm.speech.SpeechModelBuild
+import com.noamv.localllm.speech.SpeechModelCatalog
+import com.noamv.localllm.transfer.ModelTransferPhase
 import com.noamv.localllm.transfer.ModelTransferStatus
 import com.noamv.localllm.transfer.TransferNetworkPolicy
 import kotlinx.coroutines.CancellationException
@@ -34,6 +39,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
@@ -49,10 +55,12 @@ internal class ManagerViewModel(
     private val engine: LlmEngine,
     private val build: ModelBuild,
     val transferStatus: StateFlow<ModelTransferStatus>,
-    private val startOwnerTransfer: (TransferNetworkPolicy) -> ModelTransferLaunchResult,
+    private val startOwnerTransfer: (ModelTransferCommand.Start) -> ModelTransferLaunchResult,
     private val cancelOwnerTransfer: () -> Boolean,
     private val prepareInstalledModel: () -> Unit,
     private val scheduler: InferenceScheduler,
+    private val isModelInstalled: (DownloadableModel) -> Boolean = { false },
+    private val deleteSpeechModelFile: suspend (SpeechModelBuild) -> Boolean = { false },
     private val historyRepository: AssistantHistoryRepository? = null,
     private val accessPolicy: AssistantAccessPolicy? = null,
     private val themePreferences: ThemePreferences? = null,
@@ -121,14 +129,67 @@ internal class ManagerViewModel(
     val transferCommandMessage: StateFlow<String?> = _transferCommandMessage.asStateFlow()
 
     val modelName: String get() = build.displayName
+    val modelBuild: ModelBuild get() = build
     val modelSizeGb: Double get() = build.sizeGb
     val chipset: String? get() = LiteRtEngine.boardPlatform()
 
-    /** Starts the explicit foreground transfer; closing this screen does not cancel it. */
-    fun prepare() = startTransfer(TransferNetworkPolicy.UNMETERED_WIFI)
+    internal enum class SpeechModelState { INSTALLED, NOT_INSTALLED, DOWNLOADING, VERIFYING }
 
-    fun prepareOnMeteredNetworkOnce() =
-        startTransfer(TransferNetworkPolicy.ALLOW_METERED_ONCE)
+    internal data class SpeechModelRow(
+        val build: SpeechModelBuild,
+        val state: SpeechModelState,
+        val percent: Int = 0,
+    )
+
+    private val speechModelRevision = MutableStateFlow(0)
+    val speechModels: StateFlow<List<SpeechModelRow>> = combine(
+        transferStatus,
+        speechModelRevision,
+    ) { transfer, _ ->
+        SpeechModelCatalog.all.map { speechModel ->
+            val active = transfer.isActive && transfer.descriptor.modelId == speechModel.id
+            val state = when {
+                active && transfer.phase in setOf(
+                    ModelTransferPhase.VERIFYING,
+                    ModelTransferPhase.INSTALLING,
+                ) -> SpeechModelState.VERIFYING
+                active -> SpeechModelState.DOWNLOADING
+                isModelInstalled(speechModel) -> SpeechModelState.INSTALLED
+                else -> SpeechModelState.NOT_INSTALLED
+            }
+            SpeechModelRow(
+                build = speechModel,
+                state = state,
+                percent = if (active && transfer.bytes.expectedBytes > 0L) {
+                    (transfer.bytes.availableBytes * 100L / transfer.bytes.expectedBytes)
+                        .toInt()
+                        .coerceIn(0, 100)
+                } else {
+                    0
+                },
+            )
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** Starts the explicit foreground transfer; closing this screen does not cancel it. */
+    fun prepare() = startTransfer(build, TransferNetworkPolicy.UNMETERED_WIFI)
+
+    fun prepareOnMeteredNetworkOnce(model: DownloadableModel = build) =
+        startTransfer(model, TransferNetworkPolicy.ALLOW_METERED_ONCE)
+
+    fun downloadSpeechModel(build: SpeechModelBuild) =
+        startTransfer(build, TransferNetworkPolicy.UNMETERED_WIFI)
+
+    fun deleteSpeechModel(build: SpeechModelBuild) {
+        viewModelScope.launch {
+            if (deleteSpeechModelFile(build)) {
+                speechModelRevision.value++
+            } else {
+                _transferCommandMessage.value =
+                    "Cannot delete ${build.displayName} while dictation is in flight."
+            }
+        }
+    }
 
     fun cancelTransfer() {
         if (!cancelOwnerTransfer()) {
@@ -138,8 +199,10 @@ internal class ManagerViewModel(
 
     fun loadInstalledModel() = prepareInstalledModel()
 
-    private fun startTransfer(policy: TransferNetworkPolicy) {
-        _transferCommandMessage.value = when (startOwnerTransfer(policy)) {
+    private fun startTransfer(model: DownloadableModel, policy: TransferNetworkPolicy) {
+        _transferCommandMessage.value = when (
+            startOwnerTransfer(ModelTransferCommand.Start(policy = policy, model = model))
+        ) {
             ModelTransferLaunchResult.STARTED -> null
             ModelTransferLaunchResult.FOREGROUND_START_NOT_ALLOWED ->
                 "Android did not allow the foreground transfer to start. Keep LocalLLM open and try again."
@@ -257,13 +320,15 @@ internal class ManagerViewModel(
                         npuDispatchAvailable = LiteRtEngine.hasNpuDispatchLibraries(app),
                     ),
                     transferStatus = app.modelTransferStatus,
-                    startOwnerTransfer = { policy -> ModelTransferService.start(app, policy) },
+                    startOwnerTransfer = { command -> ModelTransferService.start(app, command) },
                     cancelOwnerTransfer = { ModelTransferService.cancel(app) },
                     prepareInstalledModel = app::prepareInstalledModel,
                     scheduler = app.inferenceScheduler,
                     historyRepository = app.historyRepository,
                     accessPolicy = app.accessPolicy,
                     themePreferences = app.themePreferences,
+                    isModelInstalled = app.modelStore::isInstalled,
+                    deleteSpeechModelFile = app::deleteSpeechModel,
                 )
             }
         }

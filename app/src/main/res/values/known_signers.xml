@@ -22,6 +22,10 @@
         <item>98198cd143954c564faa0cc6408918edbc1a2311f2f4817cfe89223923a55cde</item>
         <!-- Cannsheet Mobile (noamvb/cannsheet-mobile-releases) -->
         <item>a9787249b106d98a421ed839789361a45753e367e243820d10d2f3a09708665e</item>
+        <!-- Inbox release signer (CN=Inbox, O=Noam), read with apksigner from the release
+             APK built on 2026-09-16. The debug signer lives only in src/debug and
+             src/sandbox overrides of this file. -->
+        <item>6d6a92b76281efdd62853e147e8bcb04852e64442f88386f92ff30b8df7408d1</item>
     </string-array>
 
     <!--
@@ -33,5 +37,7 @@
     <string-array name="localllm_approved_callers">
         <item>com.noamv.poopschedule|98198cd143954c564faa0cc6408918edbc1a2311f2f4817cfe89223923a55cde</item>
         <item>com.noamv.cannsheet.mobile|a9787249b106d98a421ed839789361a45753e367e243820d10d2f3a09708665e</item>
+        <!-- Inbox release signer; see the note above. -->
+        <item>com.noamv.inbox|6d6a92b76281efdd62853e147e8bcb04852e64442f88386f92ff30b8df7408d1</item>
     </string-array>
 </resources>

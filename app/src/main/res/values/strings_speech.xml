@@ -1,0 +1,12 @@
+<resources>
+    <string name="speech_models_title">Speech models</string>
+    <string name="speech_models_description">Models used for on-device dictation.</string>
+    <string name="speech_model_size">%1$d MB</string>
+    <string name="speech_model_installed">Installed</string>
+    <string name="speech_model_not_installed">Not installed</string>
+    <string name="speech_model_downloading">Downloading %1$d%%</string>
+    <string name="speech_model_verifying">Verifying</string>
+    <string name="speech_model_download">Download</string>
+    <string name="speech_model_delete">Delete</string>
+    <string name="speech_model_use_metered">Use mobile once</string>
+</resources>

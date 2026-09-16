@@ -27,13 +27,13 @@
       installed first. Install or update LocalLLM before the clients.
     -->
     <permission
-        android:name="com.noamv.localllm.permission.INFERENCE"
+        android:name="${applicationId}.permission.INFERENCE"
         android:label="@string/permission_inference_label"
         android:description="@string/permission_inference_description"
         android:protectionLevel="signature|knownSigner"
         android:knownCerts="@array/localllm_known_signers" />
 
-    <uses-permission android:name="com.noamv.localllm.permission.INFERENCE" />
+    <uses-permission android:name="${applicationId}.permission.INFERENCE" />
 
     <!-- Exact visibility for the two packages whose Binder UIDs may be authorized. -->
     <queries>
@@ -84,10 +84,11 @@
         <service
             android:name=".service.InferenceService"
             android:exported="true"
-            android:permission="com.noamv.localllm.permission.INFERENCE">
+            android:permission="${applicationId}.permission.INFERENCE">
             <intent-filter>
                 <action android:name="com.noamv.localllm.action.BIND_INFERENCE" />
                 <action android:name="com.noamv.localllm.v2.action.BIND_ASSISTANT" />
+                <action android:name="com.noamv.localllm.v3.action.BIND_DICTATION" />
             </intent-filter>
         </service>
 
