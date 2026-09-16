@@ -1,8 +1,31 @@
 # Handoff
 
-Last updated: 2026-08-23. LocalLLM 0.1.5 remains the released host. This document records
-the current unreleased feature branch only; historical release and device evidence remains
-in Git history.
+Last updated: 2026-09-16. LocalLLM 0.2.3 remains the released host. This document records
+unreleased feature branch context; historical release and device evidence remains in Git
+history.
+
+## inbox-v3 branch (16 Sep 2026)
+
+- **Purpose**: v3 dictation contract (transcribe via whisper.cpp, structure via
+  Gemma with constrained JSON) for the Inbox client; first native code in the
+  app; whisper.cpp vendored under third_party at da54572 (GPU backends,
+  examples, tests stripped); a `sandbox` build type (applicationId suffix
+  .sandbox, debug key, ${applicationId}-scoped INFERENCE permission) that
+  installs beside the release app; Inbox's DEBUG signer approved for
+  development only.
+- **Measured on a Galaxy Z Fold 7**: whisper base.en 1.27 s for 3 s of audio after
+  capping threads to the process's CPU affinity (was 12 s); Gemma structure()
+  ~15 s cold, warm ~1-2 s; five sentences sorted correctly with the tolerant
+  parser; constrained decoding needed ExperimentalFlags.enableConversationConstrainedDecoding.
+- **Unit suite at HEAD**: `./gradlew --no-configuration-cache :app:testDebugUnitTest`
+  executed at `c28ae02` passes 294 tests across 40 suites with zero failures, zero
+  errors, and zero skips (quoted from `app/build/test-results/testDebugUnitTest`).
+- **Open items**: whisper models cannot yet be downloaded from the manager screen
+  (a DownloadableModel refactor of ModelStore was judged too wide for a
+  delegated run; decision pending); release signing and merge to main not
+  done; native libraries link dynamically (libwhisper, libggml*) rather than
+  into one .so; libparakeet.so is built and unused; timings probes remain as
+  Log.d.
 
 ## Current branch and scope
 

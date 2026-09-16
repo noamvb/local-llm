@@ -11,6 +11,12 @@ phone, and the model runs with no network connection once it has been downloaded
 - Runtime: [LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM) 0.16.1
 - Model: Gemma 4 E2B instruction-tuned, Apache 2.0
 
+Dictation (v3):
+- Runtime: whisper.cpp (vendored under `third_party/whisper.cpp` at da54572) for audio transcription; resident LiteRT-LM for JSON structuring
+- Models: Whisper base.en (default), small.en; resident Gemma 4 E2B
+- Structuring: resident Gemma 4 E2B via LiteRT-LM constrained JSON
+- Contract: `IDictationServiceV3` for transcription and structuring (see `docs/API_CONTRACT.md`)
+
 ## Why this exists as a separate app
 
 A 2 GB model cannot be bundled into each tracker app. Hosting it once and exposing it
@@ -20,9 +26,11 @@ model. It also keeps the tracker apps free of any inference dependency.
 ## How the pieces fit
 
 ```
-Poop Schedule  ──┐
-                 ├── AIDL bound service ──▶ LocalLLM ──▶ LiteRT-LM ──▶ Gemma 4 E2B
-Cannsheet Mobile ┘   (signature-gated)                                (on-device)
+Poop Schedule    ──┐
+Cannsheet Mobile ──┼── AIDL bound service ──▶ LocalLLM ──┬──▶ LiteRT-LM ──▶ Gemma 4 E2B
+Inbox (dictation)──┘   (signature-gated)                 │                (on-device)
+                                                         └──▶ whisper.cpp ──▶ Whisper base.en
+                                                                              (on-device)
 ```
 
 Clients send **facts**, never rows. Every number is computed by the client before the
