@@ -70,6 +70,8 @@ class InferenceService : Service() {
             callerAuthorizer = callerAuthorizer::enforceAuthorizedCaller,
             engine = app.whisperEngine,
             llmEngine = app.engine,
+            prewarmModel = app::prewarmModel,
+            onInferenceActivity = app::recordInferenceActivity,
         )
     }
 

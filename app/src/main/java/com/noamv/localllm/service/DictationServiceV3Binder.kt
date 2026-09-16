@@ -37,6 +37,8 @@ internal class DictationServiceV3Binder(
     private val callerAuthorizer: (Int) -> String,
     private val engine: DictationEngine,
     private val llmEngine: LlmEngine,
+    private val prewarmModel: () -> Unit = {},
+    private val onInferenceActivity: () -> Unit = {},
     private val getCallingUid: () -> Int = { Binder.getCallingUid() },
     private val readAudio: (ParcelFileDescriptor?) -> FloatArray = { descriptor ->
         requireNotNull(descriptor) { "audio descriptor is missing" }
@@ -49,20 +51,28 @@ internal class DictationServiceV3Binder(
     private val active = AtomicBoolean(false)
 
     override fun getApiVersion(): Int {
-        enforceCaller()
-        return DictationContractV3.VERSION
+        return authorizedServiceCall(
+            authorize = ::enforceCaller,
+            afterAuthorization = prewarmModel,
+            call = { DictationContractV3.VERSION },
+        )
     }
 
     override fun getCapabilitiesJson(): String {
-        enforceCaller()
-        return DictationContractV3.json.encodeToString(
-            DictationCapabilities.serializer(),
-            DictationCapabilities(
-                models = listOf(
-                    SpeechModelCapability(SpeechModelCatalog.BASE_EN.id, installed = false),
-                    SpeechModelCapability(SpeechModelCatalog.SMALL_EN.id, installed = true),
-                ),
-            ),
+        return authorizedServiceCall(
+            authorize = ::enforceCaller,
+            afterAuthorization = prewarmModel,
+            call = {
+                DictationContractV3.json.encodeToString(
+                    DictationCapabilities.serializer(),
+                    DictationCapabilities(
+                        models = listOf(
+                            SpeechModelCapability(SpeechModelCatalog.BASE_EN.id, installed = false),
+                            SpeechModelCapability(SpeechModelCatalog.SMALL_EN.id, installed = true),
+                        ),
+                    ),
+                )
+            },
         )
     }
 
@@ -191,6 +201,9 @@ internal class DictationServiceV3Binder(
             } finally {
                 inFlight.remove(requestId, record)
                 active.set(false)
+                // v3 structure bypasses InferenceScheduler, so explicitly refresh the
+                // application's idle-residency clock after this LLM activity.
+                onInferenceActivity()
             }
         }
         record.job = job

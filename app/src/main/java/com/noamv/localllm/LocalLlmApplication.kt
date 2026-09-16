@@ -1,6 +1,7 @@
 package com.noamv.localllm
 
 import android.app.Application
+import android.content.ComponentCallbacks2
 import android.net.Network
 import android.util.Log
 import com.noamv.localllm.engine.ArtifactAcquisitionStage
@@ -319,7 +320,7 @@ class LocalLlmApplication : Application() {
     @Suppress("DEPRECATION")
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        if (level < TRIM_MEMORY_RUNNING_CRITICAL) return
+        if (!shouldUnloadForMemoryTrim(level)) return
 
         // The service-owned transfer Job is cancelled synchronously through its registry;
         // ModelStore then retains safely written partial bytes. Native generation itself
@@ -335,3 +336,7 @@ class LocalLlmApplication : Application() {
         private const val TAG = "LocalLlmApplication"
     }
 }
+
+internal fun shouldUnloadForMemoryTrim(level: Int): Boolean =
+    level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL ||
+        level >= ComponentCallbacks2.TRIM_MEMORY_MODERATE

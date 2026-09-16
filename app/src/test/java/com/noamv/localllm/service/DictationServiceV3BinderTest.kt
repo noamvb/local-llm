@@ -27,9 +27,33 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.atomic.AtomicInteger
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class DictationServiceV3BinderTest {
+    @Test
+    fun metadataPrewarmsExactlyOnceAfterAuthorizationAndNeverForUnauthorizedCaller() = runTest {
+        val prewarmCount = AtomicInteger()
+        val authorized = makeBinder(
+            FakeEngine(),
+            prewarmModel = prewarmCount::incrementAndGet,
+        )
+
+        authorized.getCapabilitiesJson()
+        assertEquals(1, prewarmCount.get())
+        authorized.getApiVersion()
+        assertEquals(2, prewarmCount.get())
+
+        val unauthorizedPrewarmCount = AtomicInteger()
+        val unauthorized = makeBinder(
+            FakeEngine(),
+            authorizer = { throw SecurityException("denied") },
+            prewarmModel = unauthorizedPrewarmCount::incrementAndGet,
+        )
+        assertThrows(SecurityException::class.java) { unauthorized.getCapabilitiesJson() }
+        assertEquals(0, unauthorizedPrewarmCount.get())
+    }
+
     @Test
     fun unauthorizedUidThrowsAndNeverInvokesEngine() = runTest {
         val fake = FakeEngine()
@@ -155,6 +179,21 @@ class DictationServiceV3BinderTest {
     }
 
     @Test
+    fun structureCompletionRecordsActivityForResidencyBecauseV3BypassesScheduler() = runTest {
+        val activityCount = AtomicInteger()
+        val callback = RecordingCallback()
+
+        makeBinder(
+            FakeEngine(),
+            llmEngine = FakeLlmEngine(),
+            onInferenceActivity = activityCount::incrementAndGet,
+        ).structure(structureRequestJson(), callback)
+        advanceUntilIdle()
+
+        assertEquals(1, activityCount.get())
+    }
+
+    @Test
     fun legacyStructureEnvelopeWithSynonymsReportsExactEncodedResultJson() = runTest {
         val callback = RecordingCallback()
         makeBinder(
@@ -199,11 +238,15 @@ class DictationServiceV3BinderTest {
         authorizer: (Int) -> String = { "com.noamv.inbox" },
         readAudio: (ParcelFileDescriptor?) -> FloatArray = { FloatArray(16_000) },
         llmEngine: FakeLlmEngine = FakeLlmEngine(),
+        prewarmModel: () -> Unit = {},
+        onInferenceActivity: () -> Unit = {},
     ): DictationServiceV3Binder = DictationServiceV3Binder(
         scope = this,
         callerAuthorizer = authorizer,
         engine = fake,
         llmEngine = llmEngine,
+        prewarmModel = prewarmModel,
+        onInferenceActivity = onInferenceActivity,
         getCallingUid = { 1234 },
         readAudio = readAudio,
     )
