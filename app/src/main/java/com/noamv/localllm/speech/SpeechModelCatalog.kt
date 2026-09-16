@@ -32,5 +32,7 @@ object SpeechModelCatalog {
 
     val all: List<SpeechModelBuild> = listOf(BASE_EN, SMALL_EN)
     fun byId(id: String): SpeechModelBuild? = all.firstOrNull { it.id == id }
-    val default: SpeechModelBuild = BASE_EN
+    // small.en: 4.4 s for 2.4 s of audio on a Z Fold 7 (16 Sep 2026) and first-try
+    // accurate where base.en (1.3 s) misheard; clients may still request base.en.
+    val default: SpeechModelBuild = SMALL_EN
 }
