@@ -80,6 +80,23 @@ class ModelStoreTest {
     private val partFile: File get() = File(temporaryFolder.root, "${build.fileName}.part")
 
     @Test
+    fun `pruneExcept keeps speech model files and their partials`() = runTest {
+        val store = ModelStore(temporaryFolder.root, clientServing(payload))
+        store.ensureAvailable(build)
+        val whisper = File(temporaryFolder.root, "ggml-base.en.bin").apply { writeBytes(ByteArray(16)) }
+        val whisperPart = File(temporaryFolder.root, "ggml-small.en.bin.part").apply { writeBytes(ByteArray(8)) }
+        val stranded = File(temporaryFolder.root, "gemma-old.litertlm").apply { writeBytes(ByteArray(32)) }
+
+        val reclaimed = store.pruneExcept(build)
+
+        assertEquals(32L, reclaimed)
+        assertTrue("speech model must survive the prune", whisper.exists())
+        assertTrue("speech partial must survive the prune", whisperPart.exists())
+        assertFalse("the stranded language model must be pruned", stranded.exists())
+        assertTrue(store.isInstalled(build))
+    }
+
+    @Test
     fun `a completed download verifies and installs`() = runTest {
         val store = ModelStore(temporaryFolder.root, clientServing(payload))
 

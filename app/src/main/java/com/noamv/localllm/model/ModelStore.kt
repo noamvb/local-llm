@@ -1,5 +1,6 @@
 package com.noamv.localllm.model
 
+import com.noamv.localllm.speech.SpeechModelCatalog
 import android.content.Context
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
@@ -696,6 +697,15 @@ class ModelStore internal constructor(
     fun installedFiles(): List<File> = modelsDir.listFiles()?.toList().orEmpty()
 
     /**
+     * Speech models share this directory but belong to the dictation contract, not to the
+     * language-model selection this prune serves. Measured 16 Sep 2026: the first Gemma
+     * load after a whisper model was installed deleted it. Their partial downloads are
+     * kept for the same reason.
+     */
+    private fun isSpeechModelFile(name: String): Boolean =
+        SpeechModelCatalog.all.any { it.fileName == name || "${it.fileName}.part" == name }
+
+    /**
      * Deletes every model file except [keep], returning the bytes reclaimed.
      *
      * Without this, changing the selected build silently strands the previous one. These
@@ -706,7 +716,7 @@ class ModelStore internal constructor(
         withContext(Dispatchers.IO) {
             val keepName = keep.fileName
             installedFiles()
-                .filter { it.name != keepName }
+                .filter { it.name != keepName && !isSpeechModelFile(it.name) }
                 .sumOf { file ->
                     val size = file.length()
                     deleteOrThrow(file, "Could not prune unused model file ${file.name}.")
