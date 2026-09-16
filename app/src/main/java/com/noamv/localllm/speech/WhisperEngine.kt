@@ -1,5 +1,7 @@
 package com.noamv.localllm.speech
 
+import android.os.SystemClock
+import android.util.Log
 import android.content.Context
 import com.noamv.localllm.contract.v3.DictationResultFields
 import com.noamv.localllm.contract.v3.DictationTimings
@@ -25,9 +27,9 @@ internal interface DictationEngine {
     ): DictationResultFields
 }
 
-class WhisperEngine(
+class WhisperEngine internal constructor(
     private val context: Context,
-    private val native: WhisperNative = WhisperNative(),
+    private val native: WhisperBackend = WhisperNative(),
 ) : DictationEngine, AutoCloseable {
     private val operationLock = Mutex()
     private var loaded: LoadedContext? = null
@@ -42,14 +44,26 @@ class WhisperEngine(
         try {
             return withContext(Dispatchers.Default) {
                 check(!closed.get()) { "Whisper engine is closed" }
+                val loadStartMs = SystemClock.elapsedRealtime()
+                Log.d(TAG, "model load start model=${build.id} t=$loadStartMs")
                 val handle = ensureLoaded(build)
+                Log.d(
+                    TAG,
+                    "model load end model=${build.id} t=${SystemClock.elapsedRealtime()} elapsedMs=${SystemClock.elapsedRealtime() - loadStartMs}",
+                )
                 onProgress(10)
                 val text = try {
+                    Log.d(TAG, "native transcribe start model=${build.id} t=${SystemClock.elapsedRealtime()}")
                     native.transcribe(
                         handle,
                         samples,
-                        minOf(8, Runtime.getRuntime().availableProcessors()),
+                        // Android may report the device-wide count even when the app is cpuset-limited.
+                        minOf(MAX_THREADS, Runtime.getRuntime().availableProcessors()),
+                        TEMPERATURE_INCREMENT,
                     )
+                        .also {
+                            Log.d(TAG, "native transcribe end model=${build.id} t=${SystemClock.elapsedRealtime()}")
+                        }
                 } catch (error: Throwable) {
                     throw DictationEngineFailureException("Whisper transcription failed", error)
                 }
@@ -96,4 +110,10 @@ class WhisperEngine(
     }
 
     private data class LoadedContext(val buildId: String, val handle: Long)
+
+    private companion object {
+        const val TAG = "DictationV3"
+        const val MAX_THREADS = 4
+        const val TEMPERATURE_INCREMENT = 0.0f
+    }
 }

@@ -2,6 +2,8 @@ package com.noamv.localllm.service
 
 import android.os.Binder
 import android.os.ParcelFileDescriptor
+import android.os.SystemClock
+import android.util.Log
 import com.noamv.localllm.contract.v3.DictationCapabilities
 import com.noamv.localllm.contract.v3.DictationContractV3
 import com.noamv.localllm.contract.v3.DictationError
@@ -68,6 +70,8 @@ internal class DictationServiceV3Binder(
         requestJson: String,
         callback: IDictationCallbackV3,
     ): String {
+        val requestStartMs = SystemClock.elapsedRealtime()
+        Log.d(TAG, "transcribe entry t=$requestStartMs")
         enforceCaller()
         val requestId = UUID.randomUUID().toString()
         val request = try {
@@ -100,14 +104,28 @@ internal class DictationServiceV3Binder(
         val job = scope.launch {
             try {
                 val samples = readAudio(audio)
+                Log.d(
+                    TAG,
+                    "after readAudio requestId=$requestId t=${SystemClock.elapsedRealtime()} samples=${samples.size}",
+                )
                 callback.safeProgress(requestId, 10, "decoding")
+                Log.d(TAG, "before engine.transcribe requestId=$requestId t=${SystemClock.elapsedRealtime()}")
                 val fields = engine.transcribe(build, samples) { percent ->
                     callback.safeProgress(requestId, percent.coerceIn(0, 100), "decoding")
                 }
+                val totalMs = SystemClock.elapsedRealtime() - requestStartMs
+                Log.d(
+                    TAG,
+                    "after engine.transcribe requestId=$requestId t=${SystemClock.elapsedRealtime()} totalMs=$totalMs",
+                )
                 val resultJson = DictationContractV3.json.encodeToString(
                     DictationResultFields.serializer(),
-                    fields.copy(requestId = requestId),
+                    fields.copy(
+                        requestId = requestId,
+                        timingsMs = fields.timingsMs.copy(total = totalMs),
+                    ),
                 )
+                Log.d(TAG, "before callback.onComplete requestId=$requestId t=${SystemClock.elapsedRealtime()}")
                 record.complete(resultJson)
             } catch (_: CancellationException) {
                 record.error(DictationError.CANCELLED, "Dictation cancelled", false)
@@ -221,6 +239,7 @@ internal class DictationServiceV3Binder(
     }
 
     private companion object {
+        const val TAG = "DictationV3"
         val ALLOWED_STRUCTURE_KINDS = setOf("todo", "note")
     }
 
