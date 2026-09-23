@@ -131,12 +131,17 @@ internal data class TransferByteSnapshot(
             val expected = expectedBytes.coerceAtLeast(0L)
             val partial = partialBytesAtStart.coerceIn(0L, expected)
             val available = availableBytes.coerceIn(0L, expected)
+            // Keep these two as locals. With both calls inline in the constructor
+            // arguments, D8 9.1.31-9.4.24 in debug mode emits a wide move that splits a
+            // register pair, and ART rejects the class at launch with a VerifyError.
+            val transferred = transferredThisRunBytes.coerceAtLeast(0L)
+            val remaining = (expected - available).coerceAtLeast(0L)
             return TransferByteSnapshot(
                 expectedBytes = expected,
                 partialBytesAtStart = partial,
                 availableBytes = available,
-                transferredThisRunBytes = transferredThisRunBytes.coerceAtLeast(0L),
-                remainingBytes = (expected - available).coerceAtLeast(0L),
+                transferredThisRunBytes = transferred,
+                remainingBytes = remaining,
             )
         }
     }
