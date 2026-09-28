@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "actions": [
+    {
+      "id": "push-main",
+      "adapter": "git_push",
+      "description": "Fast-forward push of local main to origin/main",
+      "remote": "origin",
+      "branch": "main"
+    }
+  ]
+}
