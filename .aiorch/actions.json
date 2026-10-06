@@ -7,6 +7,13 @@
       "description": "Fast-forward push of local main to origin/main",
       "remote": "origin",
       "branch": "main"
+    },
+    {
+      "id": "push-fix-structure-prompt-past-events",
+      "adapter": "git_push",
+      "description": "Fast-forward push of local fix/structure-prompt-past-events to origin/fix/structure-prompt-past-events",
+      "remote": "origin",
+      "branch": "fix/structure-prompt-past-events"
     }
   ]
 }
