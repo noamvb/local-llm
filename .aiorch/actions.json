@@ -14,6 +14,77 @@
       "description": "Fast-forward push of local fix/structure-prompt-past-events to origin/fix/structure-prompt-past-events",
       "remote": "origin",
       "branch": "fix/structure-prompt-past-events"
+    },
+    {
+      "id": "push-tag-v0-3-1",
+      "adapter": "registered_workflow",
+      "description": "Push release tag v0.3.1 (must point at origin/main) to origin; starts release-apk.yml",
+      "data_changing": false,
+      "stages": {
+        "preflight": [
+          {
+            "id": "tag-is-main-tip",
+            "argv": [
+              "sh",
+              "-c",
+              "git fetch -q origin main && test \"$(git rev-parse v0.3.1^{commit})\" = \"$(git rev-parse origin/main)\""
+            ],
+            "cwd": ".",
+            "timeout_seconds": 60
+          },
+          {
+            "id": "tag-not-on-remote",
+            "argv": [
+              "sh",
+              "-c",
+              "! git ls-remote --exit-code origin refs/tags/v0.3.1"
+            ],
+            "cwd": ".",
+            "timeout_seconds": 60
+          }
+        ],
+        "recovery_rehearsal": [],
+        "backup": [],
+        "action": [
+          {
+            "id": "push-tag",
+            "argv": [
+              "git",
+              "push",
+              "origin",
+              "refs/tags/v0.3.1"
+            ],
+            "cwd": ".",
+            "timeout_seconds": 120
+          }
+        ],
+        "verification": [
+          {
+            "id": "remote-tag-matches",
+            "argv": [
+              "sh",
+              "-c",
+              "test \"$(git ls-remote origin refs/tags/v0.3.1^{} | cut -f1)\" = \"$(git rev-parse v0.3.1^{commit})\""
+            ],
+            "cwd": ".",
+            "timeout_seconds": 60
+          }
+        ],
+        "recovery": [
+          {
+            "id": "show-remote-tag",
+            "argv": [
+              "git",
+              "ls-remote",
+              "origin",
+              "refs/tags/v0.3.1"
+            ],
+            "cwd": ".",
+            "timeout_seconds": 60
+          }
+        ]
+      },
+      "recovery_description": "A pushed tag is not rolled back automatically. If the release run fails, fix forward with a higher version; delete the tag on GitHub only with the owner's OK."
     }
   ]
 }
