@@ -6,6 +6,9 @@ import com.noamv.localllm.contract.v2.FactEvidence
 import com.noamv.localllm.contract.v2.LimitationId
 import com.noamv.localllm.contract.v2.SentenceCitation
 import java.math.BigDecimal
+import java.math.RoundingMode
+import java.time.LocalDate
+import java.time.format.DateTimeParseException
 import java.util.Locale
 import java.util.regex.Pattern
 
@@ -28,7 +31,7 @@ import java.util.regex.Pattern
 object SentenceCitationValidator {
 
     private val NUMBER_PATTERN = Pattern.compile(
-        "(?:\\$|\\b)[+-]?(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?%?\\b",
+        "(?:\\$|\\b)[+-]?(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?%?(?![\\w%])",
     )
 
     private val CLINICAL_OR_CAUSAL_PATTERN = Pattern.compile(
@@ -139,43 +142,37 @@ object SentenceCitationValidator {
         val parsedFacts = facts.map { fact ->
             ParsedFact(
                 fact = fact,
-                valueNumber = parseNormalizedNumber(fact.displayValue),
-                denominatorNumber = fact.denominator?.let { BigDecimal(it) },
-                coverageNumber = fact.coveragePercent?.let { BigDecimal(it) },
+                numbers = extractNumberTokens(fact.displayValue).mapNotNull(::parseNormalizedNumber) +
+                    listOfNotNull(fact.denominator?.let { BigDecimal(it) }, fact.coveragePercent?.let { BigDecimal(it) }),
+                keywords = words(fact.displayLabel + " " + fact.metricId.substringAfter('.'))
+                    .filter { it.length >= 3 && it !in KEYWORD_STOPWORDS }
+                    .map(::normalizePlural)
+                    .toSet(),
             )
         }
+        val periodDateNumbers = facts.flatMap { fact ->
+            listOfNotNull(fact.periodStart, fact.periodEnd).flatMap(::dateNumbers)
+        }.toSet()
 
         for (sentence in sentences) {
             val sentenceLower = sentence.lowercase(Locale.ROOT)
+            val sentenceWords = words(sentence).map(::normalizePlural).toSet()
             val citedFactIds = mutableListOf<String>()
 
             // Extract numeric tokens in the sentence
-            val matcher = NUMBER_PATTERN.matcher(sentence)
-            val numbersInSentence = mutableListOf<String>()
-            while (matcher.find()) {
-                numbersInSentence.add(matcher.group())
-            }
+            val numbersInSentence = extractNumberTokens(sentence)
 
             for (parsed in parsedFacts) {
                 val fact = parsed.fact
                 val labelLower = fact.displayLabel.lowercase(Locale.ROOT)
-                val metricLower = fact.metricId.lowercase(Locale.ROOT)
 
                 val matchesLabel = (labelLower.isNotEmpty() && sentenceLower.contains(labelLower)) ||
-                    (metricLower.isNotEmpty() && sentenceLower.contains(metricLower.substringAfter('.')))
+                    parsed.keywords.any { it in sentenceWords }
 
                 val matchesNumber = numbersInSentence.any { numToken ->
                     val numParsed = parseNormalizedNumber(numToken) ?: return@any false
-                    val matchesVal = parsed.valueNumber != null && numParsed.compareTo(parsed.valueNumber) == 0
-                    val matchesDenom = parsed.denominatorNumber != null && numParsed.compareTo(parsed.denominatorNumber) == 0
-                    val matchesCov = parsed.coverageNumber != null && numParsed.compareTo(parsed.coverageNumber) == 0
-
-                    if (matchesVal || matchesDenom || matchesCov) {
-                        // Check unit compatibility if unit is present
+                    parsed.numbers.any { matchesNumber(numParsed, it) } &&
                         isUnitCompatible(numToken, fact.unit, fact.displayValue)
-                    } else {
-                        false
-                    }
                 }
 
                 if (matchesLabel || matchesNumber) {
@@ -194,15 +191,14 @@ object SentenceCitationValidator {
                 val numParsed = parseNormalizedNumber(numToken)
                 if (numParsed != null) {
                     val matchingFact = parsedFacts.firstOrNull { parsed ->
-                        val matchesNum = (parsed.valueNumber != null && numParsed.compareTo(parsed.valueNumber) == 0) ||
-                            (parsed.denominatorNumber != null && numParsed.compareTo(parsed.denominatorNumber) == 0) ||
-                            (parsed.coverageNumber != null && numParsed.compareTo(parsed.coverageNumber) == 0)
+                        val matchesNum = parsed.numbers.any { matchesNumber(numParsed, it) }
                         matchesNum && isUnitCompatible(numToken, parsed.fact.unit, parsed.fact.displayValue)
                     }
 
                     if (matchingFact == null) {
-                        // Check if it is a common benign numeral like 1, 2, 7, 30 in a grounded sentence
-                        val isStandardPeriodOrOrdinal = numParsed in ALLOWED_ORDINAL_NUMBERS
+                        // Dates and benign ordinals need an independently cited fact and cannot waive units.
+                        val isStandardPeriodOrOrdinal = !numToken.startsWith("$") && !numToken.endsWith("%") &&
+                            (numParsed in ALLOWED_ORDINAL_NUMBERS || numParsed in periodDateNumbers)
                         if (!isStandardPeriodOrOrdinal || citedFactIds.isEmpty()) {
                             issues.add("Ungrounded or unit-mismatched number '$numToken' found in sentence: '$sentence'")
                         }
@@ -260,6 +256,35 @@ object SentenceCitationValidator {
         }
     }
 
+    private fun extractNumberTokens(text: String): List<String> {
+        val matcher = NUMBER_PATTERN.matcher(text)
+        val tokens = mutableListOf<String>()
+        while (matcher.find()) tokens.add(matcher.group())
+        return tokens
+    }
+
+    private fun matchesNumber(sentenceNumber: BigDecimal, factNumber: BigDecimal): Boolean =
+        sentenceNumber.compareTo(factNumber) == 0 ||
+            (sentenceNumber.scale() < factNumber.scale() &&
+                sentenceNumber.compareTo(factNumber.setScale(sentenceNumber.scale(), RoundingMode.HALF_UP)) == 0)
+
+    private fun words(text: String): List<String> =
+        Regex("[\\p{L}\\p{N}]+").findAll(text.lowercase(Locale.ROOT)).map { it.value }.toList()
+
+    private fun normalizePlural(word: String): String = when {
+        word.endsWith("ches") || word.endsWith("shes") || word.endsWith("sses") ||
+            word.endsWith("xes") || word.endsWith("zzes") || word.endsWith("oes") -> word.dropLast(2)
+        word.length > 3 && word.endsWith("s") && !word.endsWith("ss") -> word.dropLast(1)
+        else -> word
+    }
+
+    private fun dateNumbers(value: String): List<BigDecimal> = try {
+        val date = LocalDate.parse(value)
+        listOf(BigDecimal(date.year), BigDecimal(date.monthValue), BigDecimal(date.dayOfMonth))
+    } catch (_: DateTimeParseException) {
+        emptyList()
+    }
+
     private fun isUnitCompatible(numToken: String, factUnit: String?, factDisplayValue: String): Boolean {
         if (numToken.startsWith("$")) {
             val factHasDollar = factDisplayValue.contains("$") || factUnit.equals("USD", ignoreCase = true) || factUnit.equals("$", ignoreCase = true)
@@ -285,7 +310,7 @@ object SentenceCitationValidator {
 
     private fun splitIntoSentences(text: String): List<String> {
         val result = mutableListOf<String>()
-        val paragraphs = text.split("\n+")
+        val paragraphs = text.split(Regex("\n+"))
         for (paragraph in paragraphs) {
             val parts = paragraph.split(Regex("(?<=[.!?])\\s+"))
             for (part in parts) {
@@ -309,9 +334,12 @@ object SentenceCitationValidator {
 
     private data class ParsedFact(
         val fact: FactEvidence,
-        val valueNumber: BigDecimal?,
-        val denominatorNumber: BigDecimal?,
-        val coverageNumber: BigDecimal?,
+        val numbers: List<BigDecimal>,
+        val keywords: Set<String>,
+    )
+
+    private val KEYWORD_STOPWORDS = setOf(
+        "the", "and", "for", "per", "of", "in", "on", "with", "between", "average", "total", "entries", "entry", "recorded",
     )
 
     private val ALLOWED_ORDINAL_NUMBERS = setOf(

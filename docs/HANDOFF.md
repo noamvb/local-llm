@@ -1,6 +1,42 @@
 # Handoff
 
-Last updated: 2026-09-16. LocalLLM 0.2.3 remains the released host. This document records
+## Answer checker and queued assistant expiry (22 Oct 2026)
+
+Based on `origin/main` `369f65d` (0.3.1). The answer checker now cites numberless
+sentences using whole-word label/metric keywords with simple plural normalization,
+splits paragraphs with a regex, extracts every number from legacy display values,
+and accepts HALF_UP rounding to fewer decimal places. ISO fact-period date components
+are grounded only in sentences that already cite a fact. Invented numbers,
+currency/percentage mismatches, and clinical/causal language remain rejected.
+
+The v2 assistant binder also handles queue expiry before execution: it delivers a
+terminal TIMEOUT result, records TIMEOUT history under the authenticated client,
+and cleans up the request without querying providers or running inference.
+
+Added 19 validator tests covering T1-T8 and keyword/plural, precision, legacy-token,
+date, and unit edge cases, plus two binder expiry tests. Existing test bodies are
+unchanged. The focused regression run reproduced 13 new failures before implementation;
+a later size/plural regression also failed before its fix.
+
+Verification commands and outcomes:
+
+- `./gradlew --no-daemon testDebugUnitTest assembleDebug`: **PASS**, 2m 58s;
+  328 app and 45 client tests, zero failures/errors/skips; debug APK assembled.
+- `./gradlew --no-daemon lintDebug`: **PASS**, 1m 53s; zero errors,
+  15 app warnings, no client issues.
+- `./gradlew --no-daemon :app:testDebugUnitTest --tests 'com.noamv.localllm.validation.SentenceCitationValidatorTest' --tests 'com.noamv.localllm.service.AssistantServiceV2BinderTest'`:
+  initial red 33 tests/13 new failures; next run 35 tests/one new size/plural failure;
+  all 35 pass in the final full suite. The first unqualified `testDebugUnitTest`
+  attempt failed because its app-only filters also applied to the client module.
+- `git diff --check`: **PASS**.
+
+Validation is limited to JVM tests, compilation, assembly, and lint; no physical-device
+inference has been exercised. Contracts, query-period semantics, release versions,
+and signing are unchanged.
+
+## Earlier branch context (16 Sep 2026)
+
+Historical note: LocalLLM 0.2.3 was the released host on 2026-09-16. The sections below record
 unreleased feature branch context; historical release and device evidence remains in Git
 history.
 

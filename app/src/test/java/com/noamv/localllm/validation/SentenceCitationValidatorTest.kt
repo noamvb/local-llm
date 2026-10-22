@@ -141,4 +141,210 @@ class SentenceCitationValidatorTest {
         val result = SentenceCitationValidator.validate(text, sampleFacts)
         assertEquals(AssistantTerminalStatus.FAILED_VALIDATION, result.status)
     }
+
+    private val activeDays = sampleFacts[1].copy(
+        factId = "fact-active-days",
+        sourceApp = AppSource.POOP_SCHEDULE,
+        metricId = "poop.active_days",
+        displayLabel = "Active logging days",
+        displayValue = "23",
+        denominator = 30L,
+    )
+
+    private val duration = activeDays.copy(
+        factId = "fact-duration",
+        metricId = "poop.duration",
+        displayLabel = "Average duration",
+        displayValue = "8",
+        denominator = null,
+        unit = "minutes",
+    )
+
+    @Test
+    fun testNumberlessSentenceWithLabelKeywordPasses() {
+        val result = SentenceCitationValidator.validate(
+            "You logged entries on most active days.",
+            listOf(activeDays),
+        )
+        assertEquals(AssistantTerminalStatus.VALIDATED, result.status)
+        assertEquals(listOf(activeDays.factId), result.citations.single().citedFactIds)
+    }
+
+    @Test
+    fun testNumberlessSentenceWithoutKeywordFails() {
+        val result = SentenceCitationValidator.validate("You feel great on weekends.", listOf(activeDays))
+        assertEquals(AssistantTerminalStatus.FAILED_VALIDATION, result.status)
+    }
+
+    @Test
+    fun testMetricSuffixKeywordsNormalizeSimplePlurals() {
+        val fact = activeDays.copy(displayLabel = "Total entries recorded", metricId = "poop.active_days")
+        for (text in listOf("Your active day was logged.", "Your active days were logged.")) {
+            val result = SentenceCitationValidator.validate(text, listOf(fact))
+            assertEquals(text, AssistantTerminalStatus.VALIDATED, result.status)
+        }
+        val symptom = fact.copy(metricId = "poop.symptoms.rashes")
+        val result = SentenceCitationValidator.validate("Your rash was recorded.", listOf(symptom))
+        assertEquals(AssistantTerminalStatus.VALIDATED, result.status)
+    }
+
+    @Test
+    fun testKeywordMustMatchAWholeWord() {
+        val result = SentenceCitationValidator.validate("Your holidays were pleasant.", listOf(activeDays))
+        assertEquals(AssistantTerminalStatus.FAILED_VALIDATION, result.status)
+    }
+
+    @Test
+    fun testSizeKeywordMatchesSimplePlural() {
+        val fact = activeDays.copy(displayLabel = "Size small entries", metricId = "poop.small")
+        val result = SentenceCitationValidator.validate("Your sizes were recorded.", listOf(fact))
+        assertEquals(AssistantTerminalStatus.VALIDATED, result.status)
+    }
+
+    @Test
+    fun testFactWithNoKeywordsRequiresLabelOrNumber() {
+        val fact = activeDays.copy(displayLabel = "Total entries recorded", metricId = "poop.entries")
+        assertEquals(
+            AssistantTerminalStatus.FAILED_VALIDATION,
+            SentenceCitationValidator.validate("Entries were recorded on weekends.", listOf(fact)).status,
+        )
+        assertEquals(
+            AssistantTerminalStatus.VALIDATED,
+            SentenceCitationValidator.validate("Total entries recorded were reviewed.", listOf(fact)).status,
+        )
+        assertEquals(
+            AssistantTerminalStatus.VALIDATED,
+            SentenceCitationValidator.validate("You logged 23 records.", listOf(fact)).status,
+        )
+    }
+
+    @Test
+    fun testMultiParagraphTextHasSeparateCitations() {
+        val result = SentenceCitationValidator.validate(
+            "You logged 23 of 30 days.\n\nYour average duration was 8 minutes.",
+            listOf(activeDays, duration),
+        )
+        assertEquals(AssistantTerminalStatus.VALIDATED, result.status)
+        assertEquals(2, result.citations.size)
+        assertEquals(listOf(activeDays.factId), result.citations[0].citedFactIds)
+        assertEquals(listOf(duration.factId), result.citations[1].citedFactIds)
+    }
+
+    @Test
+    fun testParagraphBreakSplitsSentencesWithoutPunctuation() {
+        val result = SentenceCitationValidator.validate(
+            "You logged 23 of 30 days\n\nYour average duration was 8 minutes",
+            listOf(activeDays, duration),
+        )
+        assertEquals(AssistantTerminalStatus.VALIDATED, result.status)
+        assertEquals(2, result.citations.size)
+        assertEquals("You logged 23 of 30 days", result.citations[0].sentence)
+        assertEquals("Your average duration was 8 minutes", result.citations[1].sentence)
+    }
+
+    @Test
+    fun testLegacyDisplayValueGroundsEveryNumber() {
+        val fact = activeDays.copy(displayValue = "23 of 30", denominator = null)
+        val result = SentenceCitationValidator.validate("You logged 23 of 30 days.", listOf(fact))
+        assertEquals(AssistantTerminalStatus.VALIDATED, result.status)
+        assertEquals(listOf(fact.factId), result.citations.single().citedFactIds)
+    }
+
+    @Test
+    fun testLegacySecondNumberIsGroundedWithoutOrdinalExemption() {
+        val fact = activeDays.copy(displayValue = "23 of 31", denominator = null)
+        val result = SentenceCitationValidator.validate("You logged 23 of 31 days.", listOf(fact))
+        assertEquals(AssistantTerminalStatus.VALIDATED, result.status)
+    }
+
+    @Test
+    fun testLegacyDisplayValueWithUnitGroundsItsNumber() {
+        val result = SentenceCitationValidator.validate(
+            "Your average duration was 8 minutes.",
+            listOf(duration.copy(displayValue = "8 min")),
+        )
+        assertEquals(AssistantTerminalStatus.VALIDATED, result.status)
+    }
+
+    @Test
+    fun testRoundingAllowsNearestWholeNumberButRejectsInventedNumber() {
+        val facts = listOf(duration.copy(displayValue = "7.6"))
+        assertEquals(
+            AssistantTerminalStatus.VALIDATED,
+            SentenceCitationValidator.validate("Your duration was about 8 minutes.", facts).status,
+        )
+        assertEquals(
+            AssistantTerminalStatus.VALIDATED,
+            SentenceCitationValidator.validate("Your duration was 7.6 minutes.", facts).status,
+        )
+        assertEquals(
+            AssistantTerminalStatus.FAILED_VALIDATION,
+            SentenceCitationValidator.validate("Your duration was 6 minutes.", facts).status,
+        )
+    }
+
+    @Test
+    fun testRoundingUsesHalfUpAtSentencePrecision() {
+        val facts = listOf(duration.copy(displayValue = "8.25"))
+        assertEquals(
+            AssistantTerminalStatus.VALIDATED,
+            SentenceCitationValidator.validate("Your duration was 8.3 minutes.", facts).status,
+        )
+        for (text in listOf("Your duration was 8.2 minutes.", "Your duration was 8.2501 minutes.")) {
+            assertEquals(text, AssistantTerminalStatus.FAILED_VALIDATION, SentenceCitationValidator.validate(text, facts).status)
+        }
+    }
+
+    @Test
+    fun testFactPeriodDateNumbersAreGrounded() {
+        val fact = activeDays.copy(displayValue = "3", denominator = null, periodEnd = "2026-10-22")
+        for (text in listOf("On 22 October you logged 3 entries.", "On 10/22/2026 you logged 3 entries.")) {
+            assertEquals(text, AssistantTerminalStatus.VALIDATED, SentenceCitationValidator.validate(text, listOf(fact)).status)
+        }
+        assertEquals(
+            AssistantTerminalStatus.FAILED_VALIDATION,
+            SentenceCitationValidator.validate("On 23 October you logged 3 entries.", listOf(fact)).status,
+        )
+    }
+
+    @Test
+    fun testPeriodStartDateIsGroundedOnlyWithACitedFact() {
+        val fact = activeDays.copy(displayValue = "3", denominator = null, periodStart = "2026-10-18")
+        assertEquals(
+            AssistantTerminalStatus.VALIDATED,
+            SentenceCitationValidator.validate("On 18 October you logged 3 entries.", listOf(fact)).status,
+        )
+        val result = SentenceCitationValidator.validate("On 18 October you felt great.", listOf(fact))
+        assertEquals(AssistantTerminalStatus.FAILED_VALIDATION, result.status)
+        assertTrue(result.citations.single().citedFactIds.isEmpty())
+    }
+
+    @Test
+    fun testInventedNumberStillFailsWithKeywordCitation() {
+        val result = SentenceCitationValidator.validate("You logged 41 entries.", listOf(activeDays))
+        assertEquals(AssistantTerminalStatus.FAILED_VALIDATION, result.status)
+        assertTrue(result.validationIssues.any { it.contains("41") })
+    }
+
+    @Test
+    fun testCurrencyAndPercentMismatchesStillFail() {
+        for (text in listOf("Your active days were $23.", "Your active days were 23%.")) {
+            assertEquals(text, AssistantTerminalStatus.FAILED_VALIDATION, SentenceCitationValidator.validate(text, listOf(activeDays)).status)
+        }
+    }
+
+    @Test
+    fun testPercentValueRemainsGrounded() {
+        val fact = activeDays.copy(displayValue = "23%", denominator = null)
+        val result = SentenceCitationValidator.validate("Your active days were 23%.", listOf(fact))
+        assertEquals(AssistantTerminalStatus.VALIDATED, result.status)
+    }
+
+    @Test
+    fun testUnitMismatchCannotUseOrdinalOrDateExemption() {
+        val fact = activeDays.copy(displayValue = "3", denominator = null, periodEnd = "2026-10-22")
+        for (text in listOf("Your active days were $7.", "Your active days were 22%.")) {
+            assertEquals(text, AssistantTerminalStatus.FAILED_VALIDATION, SentenceCitationValidator.validate(text, listOf(fact)).status)
+        }
+    }
 }
