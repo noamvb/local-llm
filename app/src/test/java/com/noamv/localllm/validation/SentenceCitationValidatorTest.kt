@@ -347,4 +347,19 @@ class SentenceCitationValidatorTest {
             assertEquals(text, AssistantTerminalStatus.FAILED_VALIDATION, SentenceCitationValidator.validate(text, listOf(fact)).status)
         }
     }
+
+    @Test
+    fun testPeriodDayAndMonthGroundOnlyInsideADate() {
+        val fact = activeDays.copy(displayValue = "3", denominator = null, periodEnd = "2026-10-22")
+        for (text in listOf(
+            "On 22 October you logged 10 entries.",
+            "You logged 22 entries on your active days.",
+            "In 2026 you logged 10 entries on active days.",
+        )) {
+            assertEquals(text, AssistantTerminalStatus.FAILED_VALIDATION, SentenceCitationValidator.validate(text, listOf(fact)).status)
+        }
+        for (text in listOf("On Oct 22 you logged 3 entries.", "On the 22nd of October you logged 3 entries.", "In 2026 you logged 3 entries.")) {
+            assertEquals(text, AssistantTerminalStatus.VALIDATED, SentenceCitationValidator.validate(text, listOf(fact)).status)
+        }
+    }
 }

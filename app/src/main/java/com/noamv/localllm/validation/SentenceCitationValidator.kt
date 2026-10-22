@@ -150,8 +150,12 @@ object SentenceCitationValidator {
                     .toSet(),
             )
         }
-        val periodDateNumbers = facts.flatMap { fact ->
-            listOfNotNull(fact.periodStart, fact.periodEnd).flatMap(::dateNumbers)
+        val periodDates = facts.flatMap { fact ->
+            listOfNotNull(fact.periodStart, fact.periodEnd).mapNotNull(::parseIsoDate)
+        }
+        val periodYears = periodDates.map { BigDecimal(it.year) }.toSet()
+        val periodDateNumbers = periodDates.flatMap {
+            listOf(BigDecimal(it.monthValue), BigDecimal(it.dayOfMonth))
         }.toSet()
 
         for (sentence in sentences) {
@@ -161,6 +165,7 @@ object SentenceCitationValidator {
 
             // Extract numeric tokens in the sentence
             val numbersInSentence = extractNumberTokens(sentence)
+            val dateContextNumbers = dateContextNumbers(sentence)
 
             for (parsed in parsedFacts) {
                 val fact = parsed.fact
@@ -198,7 +203,10 @@ object SentenceCitationValidator {
                     if (matchingFact == null) {
                         // Dates and benign ordinals need an independently cited fact and cannot waive units.
                         val isStandardPeriodOrOrdinal = !numToken.startsWith("$") && !numToken.endsWith("%") &&
-                            (numParsed in ALLOWED_ORDINAL_NUMBERS || numParsed in periodDateNumbers)
+                            (
+                                numParsed in ALLOWED_ORDINAL_NUMBERS || numParsed in periodYears ||
+                                    (numParsed in periodDateNumbers && numParsed in dateContextNumbers)
+                                )
                         if (!isStandardPeriodOrOrdinal || citedFactIds.isEmpty()) {
                             issues.add("Ungrounded or unit-mismatched number '$numToken' found in sentence: '$sentence'")
                         }
@@ -278,11 +286,28 @@ object SentenceCitationValidator {
         else -> word
     }
 
-    private fun dateNumbers(value: String): List<BigDecimal> = try {
-        val date = LocalDate.parse(value)
-        listOf(BigDecimal(date.year), BigDecimal(date.monthValue), BigDecimal(date.dayOfMonth))
+    private fun parseIsoDate(value: String): LocalDate? = try {
+        LocalDate.parse(value)
     } catch (_: DateTimeParseException) {
-        emptyList()
+        null
+    }
+
+    /**
+     * Numbers written as part of a date: a day next to a month name ("22 October", "Oct 22"),
+     * or any part of a numeric date ("10/22/2026"). A bare "10" elsewhere is not a date, so a
+     * fact's month or day number cannot ground an invented count.
+     */
+    private fun dateContextNumbers(sentence: String): Set<BigDecimal> {
+        val numbers = mutableSetOf<BigDecimal>()
+        for (pattern in listOf(DAY_BEFORE_MONTH_PATTERN, MONTH_BEFORE_DAY_PATTERN)) {
+            val matcher = pattern.matcher(sentence)
+            while (matcher.find()) numbers.add(BigDecimal(matcher.group(1)))
+        }
+        val numeric = NUMERIC_DATE_PATTERN.matcher(sentence)
+        while (numeric.find()) {
+            for (group in 1..3) numbers.add(BigDecimal(numeric.group(group)))
+        }
+        return numbers
     }
 
     private fun isUnitCompatible(numToken: String, factUnit: String?, factDisplayValue: String): Boolean {
@@ -340,6 +365,24 @@ object SentenceCitationValidator {
 
     private val KEYWORD_STOPWORDS = setOf(
         "the", "and", "for", "per", "of", "in", "on", "with", "between", "average", "total", "entries", "entry", "recorded",
+    )
+
+    private const val MONTH_NAMES =
+        "(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|" +
+            "sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?"
+
+    private val DAY_BEFORE_MONTH_PATTERN = Pattern.compile(
+        "\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:of\\s+)?$MONTH_NAMES\\b",
+        Pattern.CASE_INSENSITIVE,
+    )
+
+    private val MONTH_BEFORE_DAY_PATTERN = Pattern.compile(
+        "\\b$MONTH_NAMES\\s+(\\d{1,2})(?:st|nd|rd|th)?\\b",
+        Pattern.CASE_INSENSITIVE,
+    )
+
+    private val NUMERIC_DATE_PATTERN = Pattern.compile(
+        "\\b(\\d{1,4})[/-](\\d{1,2})[/-](\\d{1,4})\\b",
     )
 
     private val ALLOWED_ORDINAL_NUMBERS = setOf(
