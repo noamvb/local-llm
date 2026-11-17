@@ -13,22 +13,29 @@ import com.noamv.localllm.contract.v2.HistoryPage
 import com.noamv.localllm.contract.v2.HistoryQuery
 import com.noamv.localllm.contract.v2.ProviderFactsResult
 import com.noamv.localllm.engine.EngineTimings
+import com.noamv.localllm.engine.InferencePriority
 import com.noamv.localllm.engine.InferenceScheduler
 import com.noamv.localllm.engine.LlmEngine
 import com.noamv.localllm.engine.ModelResidencyCoordinator
 import com.noamv.localllm.engine.StructurePrompt
 import com.noamv.localllm.history.AssistantHistoryRepository
+import com.noamv.localllm.history.AssistantHistoryDao
+import com.noamv.localllm.history.AssistantTurnEntity
+import com.noamv.localllm.history.ConversationThreadEntity
 import com.noamv.localllm.history.FakeAssistantHistoryDao
 import com.noamv.localllm.orchestrator.AssistantOrchestratorV2
 import com.noamv.localllm.privacy.AssistantAccessPolicy
 import com.noamv.localllm.privacy.FakeDataStore
 import com.noamv.localllm.v2.IAssistantCallbackV2
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -154,6 +161,148 @@ class AssistantServiceV2BinderTest {
         assertFalse(turns.any { it.terminalStatus == "VALIDATED" })
     }
 
+    @Test
+    fun expiredQueuedTurnCompletesOnceWithTimeoutHistoryWithoutRunningInference() = runTest(testDispatcher) {
+        val blocker = CompletableDeferred<Unit>()
+        val expiringScheduler = InferenceScheduler(testScope, maxQueueWaitMillis = 100L)
+        var providerCalls = 0
+        var modelCalls = 0
+        val engine = object : LlmEngine by createDummyEngine() {
+            override suspend fun prepare(onProgress: (Int, String) -> Unit) {
+                modelCalls++
+            }
+
+            override fun generate(request: InsightRequest): Flow<String> {
+                modelCalls++
+                return flowOf("Sample response")
+            }
+        }
+        val queuedBinder = AssistantServiceV2Binder(
+            scope = testScope,
+            callerAuthorizer = { callerPackage },
+            accessPolicy = accessPolicy,
+            historyRepository = historyRepository,
+            orchestrator = AssistantOrchestratorV2(
+                engine = engine,
+                historyRepository = historyRepository,
+                accessPolicy = accessPolicy,
+                residencyCoordinator = ModelResidencyCoordinator { 4_000_000_000L },
+                factProviderQuery = { _, _ ->
+                    providerCalls++
+                    ProviderFactsResult(
+                        sourceApp = AppSource.CANNSHEET,
+                        revision = "r1",
+                        asOfTime = 1000L,
+                        timezone = "UTC",
+                    )
+                },
+            ),
+            scheduler = expiringScheduler,
+            getCallingUid = { 1000 },
+        )
+        val request = AssistantTurnRequest(
+            requestId = "req-expired",
+            threadId = "thread-expired",
+            initiatingClient = "untrusted.request.package",
+            question = "How much weed did I buy?",
+            defaultSource = AppSource.CANNSHEET,
+        )
+        val callback = FakeCallback()
+        val requestJson = AssistantContractV2.json.encodeToString(AssistantTurnRequest.serializer(), request)
+        expiringScheduler.submit("blocker", InferencePriority.LIVE_ASSISTANT) { blocker.await() }
+
+        try {
+            assertEquals(request.requestId, queuedBinder.startTurn(requestJson, callback))
+            assertEquals(0, callback.terminalCallbacks)
+            advanceTimeBy(100L)
+            runCurrent()
+
+            assertEquals(1, callback.terminalCallbacks)
+            val result = AssistantContractV2.json.decodeFromString(
+                AssistantTerminalResult.serializer(),
+                requireNotNull(callback.lastResultJson),
+            )
+            assertEquals(AssistantTerminalStatus.TIMEOUT, result.status)
+            val queryJson = AssistantContractV2.json.encodeToString(
+                HistoryQuery.serializer(),
+                HistoryQuery(threadId = request.threadId),
+            )
+            val history = AssistantContractV2.json.decodeFromString(
+                HistoryPage.serializer(),
+                queuedBinder.getHistoryPage(queryJson),
+            )
+            assertEquals(1, history.turns.size)
+            assertEquals(AssistantTerminalStatus.TIMEOUT, history.turns.single().status)
+            assertEquals(result.historyId, history.turns.single().historyId)
+
+            blocker.complete(Unit)
+            runCurrent()
+            queuedBinder.cancelTurn(request.requestId)
+            advanceTimeBy(100L)
+            runCurrent()
+            assertEquals(1, callback.terminalCallbacks)
+            assertEquals(0, providerCalls)
+            assertEquals(0, modelCalls)
+        } finally {
+            blocker.complete(Unit)
+            expiringScheduler.close()
+        }
+    }
+
+    @Test
+    fun expiredQueuedTurnStillCompletesAndReleasesRequestWhenHistoryWriteFails() = runTest(testDispatcher) {
+        val blocker = CompletableDeferred<Unit>()
+        val expiringScheduler = InferenceScheduler(testScope, maxQueueWaitMillis = 100L)
+        val failingRepository = AssistantHistoryRepository(object : AssistantHistoryDao by fakeDao {
+            override suspend fun recordTurnAtomic(thread: ConversationThreadEntity, turn: AssistantTurnEntity): Long =
+                throw IllegalStateException("History storage unavailable")
+        })
+        val queuedBinder = AssistantServiceV2Binder(
+            scope = testScope,
+            callerAuthorizer = { callerPackage },
+            accessPolicy = accessPolicy,
+            historyRepository = failingRepository,
+            orchestrator = AssistantOrchestratorV2(
+                engine = createDummyEngine(),
+                historyRepository = failingRepository,
+                accessPolicy = accessPolicy,
+                residencyCoordinator = ModelResidencyCoordinator { 4_000_000_000L },
+                factProviderQuery = { _, _ -> error("Expired turn must not query a provider") },
+            ),
+            scheduler = expiringScheduler,
+            getCallingUid = { 1000 },
+        )
+        val request = AssistantTurnRequest(
+            requestId = "req-expired-storage-failure",
+            threadId = "thread-expired-storage-failure",
+            initiatingClient = callerPackage,
+            question = "How much weed did I buy?",
+            defaultSource = AppSource.CANNSHEET,
+        )
+        val requestJson = AssistantContractV2.json.encodeToString(AssistantTurnRequest.serializer(), request)
+        expiringScheduler.submit("blocker", InferencePriority.LIVE_ASSISTANT) { blocker.await() }
+
+        try {
+            repeat(2) {
+                val callback = FakeCallback()
+                // Reusing the ID also proves that expiry released the in-flight record.
+                assertEquals(request.requestId, queuedBinder.startTurn(requestJson, callback))
+                advanceTimeBy(100L)
+                runCurrent()
+                assertEquals(1, callback.terminalCallbacks)
+                val result = AssistantContractV2.json.decodeFromString(
+                    AssistantTerminalResult.serializer(),
+                    requireNotNull(callback.lastResultJson),
+                )
+                assertEquals(AssistantTerminalStatus.TIMEOUT, result.status)
+                assertEquals(null, result.historyId)
+            }
+        } finally {
+            blocker.complete(Unit)
+            expiringScheduler.close()
+        }
+    }
+
     private fun createDummyEngine(): LlmEngine = object : LlmEngine {
         override val status = MutableStateFlow(
             EngineStatus(
@@ -174,15 +323,18 @@ class AssistantServiceV2BinderTest {
     }
 
     private class FakeCallback : IAssistantCallbackV2.Stub() {
+        var terminalCallbacks = 0
         var lastErrorCode: Int? = null
         var lastErrorMessage: String? = null
         var lastResultJson: String? = null
 
         override fun onEvent(requestId: String?, eventJson: String?) {}
         override fun onComplete(requestId: String?, resultJson: String?) {
+            terminalCallbacks++
             lastResultJson = resultJson
         }
         override fun onError(requestId: String?, errorCode: Int, errorMessage: String?, retryable: Boolean) {
+            terminalCallbacks++
             lastErrorCode = errorCode
             lastErrorMessage = errorMessage
         }

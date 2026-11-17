@@ -9,10 +9,12 @@ import com.noamv.localllm.contract.v2.AssistantCapabilities
 import com.noamv.localllm.contract.v2.AssistantContractV2
 import com.noamv.localllm.contract.v2.AssistantEvent
 import com.noamv.localllm.contract.v2.AssistantTerminalResult
+import com.noamv.localllm.contract.v2.AssistantTerminalStatus
 import com.noamv.localllm.contract.v2.AssistantTurnRequest
 import com.noamv.localllm.contract.v2.HistoryPage
 import com.noamv.localllm.contract.v2.HistoryQuery
 import com.noamv.localllm.engine.InferencePriority
+import com.noamv.localllm.engine.InferenceQueueState
 import com.noamv.localllm.engine.InferenceScheduler
 import com.noamv.localllm.history.AssistantHistoryRepository
 import com.noamv.localllm.orchestrator.AssistantOrchestratorV2
@@ -122,7 +124,40 @@ internal class AssistantServiceV2Binder(
             requestId = requestId,
             priority = InferencePriority.LIVE_ASSISTANT,
             onState = { state ->
-                // Map queue state if needed
+                if (state == InferenceQueueState.EXPIRED) {
+                    // Expired work never starts, so the submitted block cannot deliver
+                    // its result or run its cleanup. The scheduler owns this terminal
+                    // transition exclusively; cancellation cannot also start the block.
+                    inFlight.remove(requestId, record)
+                    runCatching { callback.asBinder().unlinkToDeath(deathRecipient, 0) }
+                    scope.launch {
+                        var result = AssistantTerminalResult(
+                            status = AssistantTerminalStatus.TIMEOUT,
+                            finalOrEscapedText = "Inference queue wait expired. Retry later.",
+                        )
+                        try {
+                            val historyId = historyRepository.recordTurn(
+                                threadId = request.threadId,
+                                turnId = requestId,
+                                initiatingClient = callerPackage,
+                                question = request.question,
+                                result = result,
+                                citedFacts = emptyList(),
+                                sources = request.fixedQuery?.sources ?: listOf(request.defaultSource),
+                                period = request.fixedQuery?.period?.toString(),
+                                asOfTime = System.currentTimeMillis(),
+                                modelVersion = null,
+                            )
+                            result = result.copy(historyId = historyId)
+                        } catch (error: Exception) {
+                            if (error is CancellationException) throw error
+                            Log.e(TAG, "Failed to persist expired assistant turn", error)
+                        } finally {
+                            val resultJson = AssistantContractV2.json.encodeToString(AssistantTerminalResult.serializer(), result)
+                            callback.safeComplete(requestId, resultJson)
+                        }
+                    }
+                }
             },
         ) {
             try {

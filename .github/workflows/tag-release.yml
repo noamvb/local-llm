@@ -1,0 +1,36 @@
+name: Tag and release
+
+# Lets a cloud session (or the Actions tab) cut a release without pushing a tag from a
+# laptop: run this from main and it tags the tip of main as v<versionName>, then starts
+# release-apk.yml on that tag. A tag made with the built-in token cannot start other
+# workflows by itself, so the release run is started explicitly.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  tag-and-release:
+    name: Tag main and start the release
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create the tag and start the release run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(grep -oE 'versionName = "[^"]+"' app/build.gradle.kts | head -1 | cut -d'"' -f2)
+          test -n "$VERSION"
+          TAG="v$VERSION"
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists; raise versionName first."
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$TAG" -f sha="$GITHUB_SHA"
+          gh workflow run release-apk.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG"
+          echo "Tagged $TAG at $GITHUB_SHA and started release-apk.yml"

@@ -3,6 +3,8 @@ name: Publish signed LocalLLM APK
 on:
   push:
     tags: ["v*"]
+  # Started by tag-release.yml, which runs it against the tag it just created.
+  workflow_dispatch:
 
 permissions:
   contents: write
