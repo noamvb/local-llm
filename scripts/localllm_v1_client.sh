@@ -32,13 +32,23 @@ vendored_dirs=(
 # holds nothing else.
 tree_digest() {
   local root=$1
+  [[ -d "$root" ]] || {
+    echo "ERROR: no such source root: $root" >&2
+    return 1
+  }
   (
-    cd "$root"
+    cd "$root" || exit 1
     local dir
     for dir in "${vendored_dirs[@]}"; do
-      if [[ -d "$dir" ]]; then find "$dir" -type f -print; fi
+      if [[ -d "$dir" ]]; then find "$dir" \( -type f -o -type l \) -print; fi
     done | LC_ALL=C sort | while IFS= read -r file; do
-      digest=$(openssl dgst -sha256 "$file" | awk '{print $NF}')
+      if [[ -L "$file" ]]; then
+        # A symlink is never part of the canonical tree; hash its target text
+        # so adding one changes the digest.
+        digest="symlink:$(readlink "$file")"
+      else
+        digest=$(openssl dgst -sha256 "$file" | awk '{print $NF}')
+      fi
       printf '%s  %s\n' "$digest" "$file"
     done
   ) | openssl dgst -sha256 | awk '{print $NF}'
@@ -186,6 +196,10 @@ behind_consumer() {
   local canonical_checkout=$1
   local consumer_root=${2:-$repo_root}
   local canonical_digest vendored_digest
+  [[ -d "$canonical_checkout/client/src/main" ]] || {
+    echo "::warning title=LocalLLM client check skipped::No LocalLLM client at $canonical_checkout/client/src/main; could not compare."
+    return 0
+  }
   canonical_digest=$(tree_digest "$canonical_checkout/client/src/main")
   vendored_digest=$(tree_digest "$consumer_root/app/src/main")
   if [[ "$canonical_digest" != "$vendored_digest" ]]; then
