@@ -117,7 +117,7 @@ digest, or host-side copies differ from `HEAD`.
 Consumer CI runs `bash scripts/localllm_v1_client.sh verify`, which fails offline when the
 vendored files no longer hash to the provenance digest (a hand edit), and
 `bash scripts/localllm_v1_client.sh behind <LocalLLM clone>`, which only warns when
-LocalLLM main has moved on. Cannsheet, Poop Schedule and Inbox are wired this way.
+LocalLLM main has moved on. Cannsheet, Poop Schedule and Inbox are wired this way. LocalLLM itself
 runs `check-local` in CI so its service-side AIDL/contract copy and checked
 `client/V1_SOURCE_SHA256` cannot drift. The consuming module also needs `aidl = true` in
 its `buildFeatures` and the permission and `<queries>` entry described at the top of
