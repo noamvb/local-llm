@@ -277,6 +277,11 @@ installation could receive facts from a client that checks only the package name
   cross-repository drift check when each merged canonical copy is vendored. Copying fails
   if canonical bytes differ from `HEAD`; consumer verification authenticates the recorded
   repository, exact commit, and digest instead of trusting a working-tree hash alone.
+- (17 Nov 2026) Consumers vendor the whole client tree, not only the API version they
+  use, so one digest covers every copy. Consumer CI cannot see LocalLLM's `HEAD`, so it
+  runs `verify` (offline: vendored bytes must match the provenance digest; hand edits
+  fail) and `behind` (warning only, against a shallow clone of LocalLLM main). The old
+  consumer step ran `check-local || true`, which checked nothing.
 - New downstream collectors replace their draft text on each `generateEvents()` `Draft`
   and then replace it with `Complete.text`. Existing append-based `generate()` collectors
   remain behaviorally safe because that deprecated adapter emits completion only.

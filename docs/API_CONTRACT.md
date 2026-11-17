@@ -238,8 +238,8 @@ APIs required by LocalLLM's `knownSigner` trust model.
 ## Canonical source and drift checks
 
 The version-one `client/src/main` tree is canonical. Run
-`scripts/localllm_v1_client.sh copy <consumer-root>` to replace only its AIDL, client and
-contract subtrees and write a source commit/digest provenance file. Run `check` against a
+`scripts/localllm_v1_client.sh copy <consumer-root>` to replace its AIDL, client and
+contract subtrees (all API versions) and write a source commit/digest provenance file. Run `check` against a
 consumer and `check-local` inside LocalLLM. LocalLLM CI verifies its checked digest and
 service-side duplicate; each consumer adds the cross-repository check when it vendors the
 merged canonical commit. Copy and consumer-check commands reject canonical source that

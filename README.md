@@ -109,11 +109,15 @@ bash scripts/localllm_v1_client.sh copy /absolute/path/to/client-repository
 bash scripts/localllm_v1_client.sh check /absolute/path/to/client-repository
 ```
 
-The command replaces only the version-one AIDL, client and contract subtrees, then writes
-`app/localllm-v1-client.provenance` with the LocalLLM commit and canonical source digest.
-It refuses to copy when the canonical source, checked digest, or host-side copies differ
-from `HEAD`, so an immutable commit can never be recorded for uncommitted bytes.
-Consumers must run the matching `check` command in CI after vendoring. LocalLLM itself
+The command replaces the whole client tree (v1, v2 and v3 AIDL, client and contract
+subtrees, so every consumer carries identical bytes), copies this script into the
+consumer's `scripts/`, and writes `app/localllm-v1-client.provenance` with the LocalLLM
+commit and canonical source digest. It refuses to copy when the canonical source, checked
+digest, or host-side copies differ from `HEAD`.
+Consumer CI runs `bash scripts/localllm_v1_client.sh verify`, which fails offline when the
+vendored files no longer hash to the provenance digest (a hand edit), and
+`bash scripts/localllm_v1_client.sh behind <LocalLLM clone>`, which only warns when
+LocalLLM main has moved on. Cannsheet, Poop Schedule and Inbox are wired this way.
 runs `check-local` in CI so its service-side AIDL/contract copy and checked
 `client/V1_SOURCE_SHA256` cannot drift. The consuming module also needs `aidl = true` in
 its `buildFeatures` and the permission and `<queries>` entry described at the top of
