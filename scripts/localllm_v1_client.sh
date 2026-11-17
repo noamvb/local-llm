@@ -182,6 +182,10 @@ verify_consumer() {
     echo "ERROR: $provenance names $recorded_repository, expected $source_repository." >&2
     return 1
   }
+  [[ "$(provenance_value "$provenance" source_commit)" =~ ^[0-9a-f]{40}$ ]] || {
+    echo "ERROR: $provenance has no valid source_commit (40 hex characters)." >&2
+    return 1
+  }
   if [[ "$expected" != "$actual" ]]; then
     echo "ERROR: vendored LocalLLM client was edited by hand (hashes to $actual, provenance says $expected)." >&2
     echo "Change it in LocalLLM, then run: scripts/localllm_v1_client.sh copy <this repo>" >&2
