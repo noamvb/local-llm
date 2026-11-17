@@ -2,7 +2,10 @@
 
 ## Project overview
 
-LocalLLM hosts an on-device language model (LiteRT-LM) and exposes it to client Android apps over a signature-gated AIDL bound service. It is a single-module Kotlin application with a Jetpack Compose management UI dedicated to model transfer, verification, and lifecycle management (inference occurs exclusively over AIDL).
+LocalLLM hosts an on-device language model (LiteRT-LM) and exposes it to client Android apps over a signature-gated AIDL bound service. It has two Kotlin Android modules:
+
+- `:app`: host application with a Jetpack Compose management UI for model transfer, verification, and lifecycle management, plus the inference service.
+- `:client`: Android library containing client binding helpers, shared wire contracts, and AIDL interfaces.
 
 ## Required reading
 
